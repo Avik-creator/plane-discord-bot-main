@@ -1,0 +1,72 @@
+# ============================================
+# Base stage
+# ============================================
+FROM node:20-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
+
+# ============================================
+# Dependencies stage
+# ============================================
+FROM base AS deps
+COPY package.json package-lock.json* ./
+COPY prisma ./prisma/
+RUN npm ci --only=production
+RUN npx prisma generate
+
+# ============================================
+# Development dependencies (for building)
+# ============================================
+FROM base AS dev-deps
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+# ============================================
+# Production Bot image
+# ============================================
+FROM base AS bot
+ENV NODE_ENV=production
+
+# Copy node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/prisma ./prisma
+
+# Copy source code
+COPY src ./src
+COPY package.json ./
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 botuser
+USER botuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "console.log('healthy')" || exit 1
+
+CMD ["node", "src/bot.js"]
+
+# ============================================
+# Production Worker image
+# ============================================
+FROM base AS worker
+ENV NODE_ENV=production
+
+# Copy node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/prisma ./prisma
+
+# Copy source code
+COPY src ./src
+COPY package.json ./
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 workeruser
+USER workeruser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "console.log('healthy')" || exit 1
+
+CMD ["node", "src/workers/cronWorker.js"]

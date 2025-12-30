@@ -1,0 +1,99 @@
+# Docker Compose for Plane Discord Bot
+# Production deployment with bot, worker, and database
+
+version: "3.8"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: plane-bot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-plane_bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-plane_discord_bot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plane_bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - plane-bot-network
+
+  # Database migrations (runs once on startup)
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+      target: bot
+    container_name: plane-bot-migrations
+    command: npx prisma migrate deploy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane_bot}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-plane_discord_bot}?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - plane-bot-network
+
+  # Discord Bot (handles slash commands)
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+      target: bot
+    container_name: plane-bot-discord
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane_bot}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-plane_discord_bot}?schema=public
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      PLANE_API_KEY: ${PLANE_API_KEY}
+      PLANE_BASE_URL: ${PLANE_BASE_URL:-https://plane.superalign.ai/api/v1}
+      WORKSPACE_SLUG: ${WORKSPACE_SLUG}
+      PROJECT_ID: ${PROJECT_ID}
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_TEMPERATURE: ${GEMINI_TEMPERATURE:-0.3}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks:
+      - plane-bot-network
+
+  # Cron Worker (syncs data from Plane)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+      target: worker
+    container_name: plane-bot-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-plane_bot}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-plane_discord_bot}?schema=public
+      PLANE_API_KEY: ${PLANE_API_KEY}
+      PLANE_BASE_URL: ${PLANE_BASE_URL:-https://plane.superalign.ai/api/v1}
+      WORKSPACE_SLUG: ${WORKSPACE_SLUG}
+      PROJECT_ID: ${PROJECT_ID}
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-10}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks:
+      - plane-bot-network
+
+volumes:
+  postgres_data:
+
+networks:
+  plane-bot-network:
+    driver: bridge
