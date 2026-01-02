@@ -60,11 +60,7 @@ export async function getPersonDailySummary({
 
   const { startDate, endDate } = getDateRange(date);
 
-  const allActivities = await getTeamActivities(startDate, endDate, projectFilter);
-
-  const personActivities = allActivities.filter(
-    (activity) => activity.actor === personName
-  );
+  const personActivities = await getTeamActivities(startDate, endDate, projectFilter, personName);
 
   if (personActivities.length === 0) {
     return {
@@ -187,8 +183,10 @@ export async function getPersonDailySummary({
   for (const projectId of projectIds) {
     const proj = projectLookup.get(projectId);
     if (proj) {
-      const cycles = await fetchCycles(proj.id);
-      cycleData.set(projectId, cycles);
+      const allCycles = await fetchCycles(proj.id);
+      // Filter for active or current cycles only to avoid clutter
+      const activeCycles = allCycles.filter(c => c.is_current || c.state === 'started');
+      cycleData.set(projectId, activeCycles);
     }
   }
 

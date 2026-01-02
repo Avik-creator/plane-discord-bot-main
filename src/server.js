@@ -64,6 +64,11 @@ function parseSummaryToEmbed(personName, date, text, workspaceSlug) {
     }
   }
 
+  // If no fields found, use the raw text as description
+  if (fields.length === 0) {
+    description = text;
+  }
+
   return {
     embeds: [{
       title: `📊 Daily Summary: ${personName} (${date})`,

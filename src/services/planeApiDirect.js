@@ -455,9 +455,10 @@ async function fetchWorkItemActivities(projectId, workItemId) {
  * @param {Date} startDate - Start of date range
  * @param {Date} endDate - End of date range
  * @param {string} projectFilter - Optional project name or identifier to filter by
+ * @param {string} actorFilter - Optional actor name or identifier to filter by
  */
-async function getTeamActivities(startDate, endDate, projectFilter = null) {
-  return _getTeamActivitiesInternal(startDate, endDate, projectFilter);
+async function getTeamActivities(startDate, endDate, projectFilter = null, actorFilter = null) {
+  return _getTeamActivitiesInternal(startDate, endDate, projectFilter, actorFilter);
 }
 
 /**
@@ -466,7 +467,8 @@ async function getTeamActivities(startDate, endDate, projectFilter = null) {
 async function _getTeamActivitiesInternal(
   startDate,
   endDate,
-  projectFilter = null
+  projectFilter = null,
+  actorFilter = null
 ) {
   logger.info(
     `Fetching team activities from ${startDate.toISOString()} to ${endDate.toISOString()}${projectFilter ? ` for project: ${projectFilter}` : ""
@@ -580,6 +582,13 @@ async function _getTeamActivitiesInternal(
               // Fetch actor name from user ID
               const actorName = await fetchUserName(activity.actor);
 
+              // Filter by actor if requested
+              if (actorFilter && actorName !== actorFilter) {
+                continue;
+              }
+
+              foundActivityInRange = true;
+
               logger.debug(
                 `Activity: ${task.workItemIdentifier} by ${actorName}`
               );
@@ -615,6 +624,13 @@ async function _getTeamActivitiesInternal(
                   comment.actor || comment.created_by
                 );
 
+                // Filter by actor if requested
+                if (actorFilter && commentActor !== actorFilter) {
+                  continue;
+                }
+
+                foundActivityInRange = true;
+
                 activities.push({
                   type: "comment",
                   workItem: task.workItemIdentifier,
@@ -644,12 +660,21 @@ async function _getTeamActivitiesInternal(
 
             if (subitems && subitems.length > 0) {
               for (const subitem of subitems) {
+                // Filter by actor (assignee) if requested
+                if (actorFilter) {
+                  const isAssignee = subitem.assignee_details?.some(
+                    (a) =>
+                      a.display_name === actorFilter || a.email === actorFilter
+                  );
+                  if (!isAssignee) continue;
+                }
+
                 const subitemIdentifier = `${task.projectIdentifier}-${subitem.sequence_id}`;
                 const subitemState =
                   subitem.state_detail?.name || subitem.state || "Unknown";
                 const subitemPriority = subitem.priority || "none";
                 const subitemProgress = subitem.progress || {};
-                const completionPercentage = subitemProgress.completed_issues
+                const completionPercentage = subitemProgress.total_issues
                   ? Math.round(
                     ((subitemProgress.completed_issues || 0) /
                       (subitemProgress.total_issues || 1)) *
@@ -685,19 +710,23 @@ async function _getTeamActivitiesInternal(
             );
           }
 
-          // If no activities found, add snapshot
+          // If no activities found, add snapshot ONLY if the actor is assigned to this work item
           if (!foundActivityInRange) {
-            activities.push({
-              type: "work_item_snapshot",
-              workItem: task.workItemIdentifier,
-              workItemName: task.workItemName,
-              project: task.projectIdentifier,
-              state: task.state || "Unknown",
-              priority: task.priority || "None",
-              assignees: task.assignees || [],
-              createdAt: task.createdAt.toISOString(),
-              updatedAt: task.updatedAt.toISOString(),
-            });
+            const isAssigned = !actorFilter || task.assignees.some(a => a === actorFilter);
+
+            if (isAssigned) {
+              activities.push({
+                type: "work_item_snapshot",
+                workItem: task.workItemIdentifier,
+                workItemName: task.workItemName,
+                project: task.projectIdentifier,
+                state: task.state || "Unknown",
+                priority: task.priority || "None",
+                assignees: task.assignees || [],
+                createdAt: task.createdAt.toISOString(),
+                updatedAt: task.updatedAt.toISOString(),
+              });
+            }
           }
         } catch (error) {
           logger.warn(
