@@ -20,16 +20,18 @@ const PLANE_API = axios.create({
 // Rate limiting - only backoff on 429
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
-const MAX_WORK_ITEMS_PER_PROJECT = 50;
+const MAX_WORK_ITEMS_PER_PROJECT = 200;
 const MAX_ACTIVITIES_PER_ITEM = 20;
 const REQUEST_TIMEOUT_MS = 45000;
-const MAX_CONCURRENT_ACTIVITY_FETCHES = 10;
+const MAX_CONCURRENT_ACTIVITY_FETCHES = 3; // Lowered to avoid 429s
+const BATCH_DELAY_MS = 1000; // Delay between batches
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
 
 // Cache
 let projectsCache = null;
 let projectsCacheTime = null;
+let workspaceDetailsCache = null;
 let usersCache = new Map(); // Map of userId -> user details
 
 function sleep(ms) {
@@ -123,14 +125,20 @@ async function fetchUserName(userId) {
     const members = response.data.results || response.data || [];
 
     // Find user by ID
-    const user = members.find((m) => m.id === userId || m.member_id === userId);
+    const user = members.find((m) =>
+      m.id === userId ||
+      m.member_id === userId ||
+      m.member?.id === userId ||
+      m.user?.id === userId
+    );
 
     if (user) {
+      const userData = user.member || user.user || user;
       const userName =
         user.display_name ||
-        user.member?.display_name ||
-        user.first_name ||
-        user.email ||
+        userData.display_name ||
+        userData.first_name ||
+        userData.email ||
         userId;
 
       // Cache it
@@ -142,6 +150,67 @@ async function fetchUserName(userId) {
   } catch (error) {
     logger.warn(`Failed to fetch user ${userId}: ${error.message}`);
     return userId;
+  }
+}
+
+/**
+ * Fetch all workspace members
+ */
+async function getWorkspaceMembers() {
+  try {
+    const response = await apiRequestWithRetry(
+      () =>
+        PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}/members/`, {
+          params: { page: 1, per_page: 100 },
+        }),
+      `getWorkspaceMembers`
+    );
+
+    return response.data.results || response.data || [];
+  } catch (error) {
+    logger.error(`Failed to fetch workspace members: ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * Fetch workspace details
+ */
+async function getWorkspaceDetails() {
+  if (workspaceDetailsCache) return workspaceDetailsCache;
+
+  try {
+    const response = await apiRequestWithRetry(
+      () => PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}`),
+      `getWorkspaceDetails`
+    );
+
+    workspaceDetailsCache = response.data;
+    return workspaceDetailsCache;
+  } catch (error) {
+    logger.error(`Failed to fetch workspace details: ${error.message}`);
+    return { name: config.WORKSPACE_SLUG, slug: config.WORKSPACE_SLUG };
+  }
+}
+
+/**
+ * Fetch workspace-wide activities with filtering
+ * @param {Object} params - Query parameters (actor, created_at__gte, etc.)
+ */
+async function getWorkspaceActivities(params) {
+  try {
+    const response = await apiRequestWithRetry(
+      () =>
+        PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}/activities/`, {
+          params,
+        }),
+      `getWorkspaceActivities`
+    );
+
+    return response.data.results || response.data || [];
+  } catch (error) {
+    logger.error(`Failed to fetch workspace activities: ${error.message}`);
+    return [];
   }
 }
 
@@ -191,8 +260,7 @@ async function apiRequestWithRetry(requestFn, context = "") {
           : INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
 
         logger.warn(
-          `[429 Rate Limited] ${context}, retry ${
-            attempt + 1
+          `[429 Rate Limited] ${context}, retry ${attempt + 1
           }/${MAX_RETRIES} in ${delayMs}ms | Headers: ${JSON.stringify(
             error.response.headers
           )}`
@@ -201,8 +269,7 @@ async function apiRequestWithRetry(requestFn, context = "") {
       } else {
         // Non-429 errors: fail immediately, don't retry
         logger.error(
-          `[${error.response?.status || "Network"}] ${context}: ${
-            error.message
+          `[${error.response?.status || "Network"}] ${context}: ${error.message
           }`
         );
         throw error;
@@ -289,7 +356,10 @@ async function fetchWorkItems(projectId) {
   let hasMore = true;
 
   while (hasMore && workItems.length < MAX_WORK_ITEMS_PER_PROJECT) {
-    const params = cursor ? { cursor } : {};
+    const params = {
+      order_by: "-updated_at", // Fetch most recently updated first
+      ...(cursor ? { cursor } : {}),
+    };
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
@@ -373,8 +443,7 @@ async function _getTeamActivitiesInternal(
   projectFilter = null
 ) {
   logger.info(
-    `Fetching team activities from ${startDate.toISOString()} to ${endDate.toISOString()}${
-      projectFilter ? ` for project: ${projectFilter}` : ""
+    `Fetching team activities from ${startDate.toISOString()} to ${endDate.toISOString()}${projectFilter ? ` for project: ${projectFilter}` : ""
     }`
   );
 
@@ -404,8 +473,7 @@ async function _getTeamActivitiesInternal(
   }
 
   logger.info(
-    `Found ${projects.length} projects${
-      projectFilter ? ` matching "${projectFilter}"` : ""
+    `Found ${projects.length} projects${projectFilter ? ` matching "${projectFilter}"` : ""
     }`
   );
 
@@ -557,10 +625,10 @@ async function _getTeamActivitiesInternal(
                 const subitemProgress = subitem.progress || {};
                 const completionPercentage = subitemProgress.completed_issues
                   ? Math.round(
-                      ((subitemProgress.completed_issues || 0) /
-                        (subitemProgress.total_issues || 1)) *
-                        100
-                    )
+                    ((subitemProgress.completed_issues || 0) /
+                      (subitemProgress.total_issues || 1)) *
+                    100
+                  )
                   : 0;
 
                 activities.push({
@@ -688,6 +756,50 @@ async function getWorkItemsSnapshot() {
   return snapshot;
 }
 
+/**
+ * Fetch cycles for a project
+ * @param {string} projectId - Project ID
+ * @returns {Promise<Array>} List of cycles with completion info
+ */
+async function fetchCycles(projectId) {
+  try {
+    const response = await apiRequestWithRetry(
+      () =>
+        PLANE_API.get(
+          `/workspaces/${config.WORKSPACE_SLUG}/projects/${projectId}/cycles/`
+        ),
+      `fetchCycles(${projectId})`
+    );
+
+    const cycles = response.data.results || response.data || [];
+
+    return cycles.map((cycle) => ({
+      id: cycle.id,
+      name: cycle.name,
+      startDate: cycle.start_date,
+      endDate: cycle.end_date,
+      totalIssues: cycle.total_issues || 0,
+      completedIssues: cycle.completed_issues || 0,
+      cancelledIssues: cycle.cancelled_issues || 0,
+      pendingIssues: cycle.pending_issues || 0,
+      progress: cycle.progress || 0,
+      isActive: cycle.is_active || false,
+      isCurrent: (() => {
+        if (!cycle.start_date || !cycle.end_date) return false;
+        const now = new Date();
+        return new Date(cycle.start_date) <= now && now <= new Date(cycle.end_date);
+      })(),
+    }));
+  } catch (error) {
+    if (error.response?.status === 403) {
+      logger.warn(`No access to cycles for project ${projectId}`);
+      return [];
+    }
+    logger.error(`Failed to fetch cycles for ${projectId}: ${error.message}`);
+    return [];
+  }
+}
+
 module.exports = {
   fetchProjects,
   fetchWorkItems,
@@ -696,4 +808,8 @@ module.exports = {
   fetchWorkItemSubitems,
   getTeamActivities,
   getWorkItemsSnapshot,
+  getWorkspaceMembers,
+  getWorkspaceDetails,
+  getWorkspaceActivities,
+  fetchCycles,
 };
