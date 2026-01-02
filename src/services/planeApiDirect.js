@@ -1,23 +1,11 @@
-/**
- * Plane API Service (Direct)
- *
- * Fetches data directly from Plane API without database storage.
- * All data is fetched on-demand and processed in memory.
- */
-const axios = require("axios");
-const config = require("../config/config.enhanced");
-const logger = require("../utils/logger");
+import axios from "axios";
+import logger from "../utils/logger.js";
 
-const PLANE_API = axios.create({
-  baseURL: config.PLANE_BASE_URL,
-  headers: {
-    "X-API-Key": config.PLANE_API_KEY,
-    "Content-Type": "application/json",
-  },
-  timeout: 60000,
-});
+// Initialized configuration
+let serviceConfig = null;
+let PLANE_API = null;
 
-// Rate limiting - only backoff on 429
+// Rate limiting and constants
 const MAX_RETRIES = 3;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_WORK_ITEMS_PER_PROJECT = 200;
@@ -27,6 +15,46 @@ const MAX_CONCURRENT_ACTIVITY_FETCHES = 3; // Lowered to avoid 429s
 const BATCH_DELAY_MS = 1000; // Delay between batches
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
+
+/**
+ * Initialize the Plane service with configuration
+ * @param {Object} config - Configuration object
+ */
+function initPlaneService(config) {
+  serviceConfig = config;
+  PLANE_API = axios.create({
+    baseURL: config.PLANE_BASE_URL,
+    headers: {
+      "X-API-KEY": config.PLANE_API_KEY,
+      "Content-Type": "application/json",
+    },
+    timeout: REQUEST_TIMEOUT_MS,
+  });
+  logger.info("Plane service initialized");
+}
+
+/**
+ * Ensures the API client is initialized. Defaults to enhanced config if available.
+ */
+function ensureApi() {
+  if (!PLANE_API) {
+    // If we're in a Worker, we MUST have called initPlaneService already.
+    // We don't want to try requiring the Node config which depends on 'dotenv'.
+    const isWorker = typeof WebSocketPair !== 'undefined' || (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers');
+
+    if (isWorker) {
+      throw new Error("Plane API service not initialized in Worker. Call initPlaneService(env) in the fetch handler.");
+    }
+
+    try {
+      // For Node.js environments, we can fall back to the config file
+      const defaultConfig = require("../config/config.enhanced");
+      initPlaneService(defaultConfig);
+    } catch (e) {
+      throw new Error("Plane API service not initialized. Call initPlaneService(config) first.");
+    }
+  }
+}
 
 // Cache
 let projectsCache = null;
@@ -104,19 +132,16 @@ async function fetchWorkItemSubitems(projectId, workItemId) {
  * Fetch user details by ID from workspace members
  */
 async function fetchUserName(userId) {
-  if (!userId) return "Unknown";
-
-  // Check cache first
-  const cached = usersCache.get(userId);
-  if (cached) {
-    return cached;
+  ensureApi();
+  // Return from cache if available
+  if (usersCache.has(userId)) {
+    return usersCache.get(userId);
   }
 
   try {
-    // Fetch workspace members list
     const response = await apiRequestWithRetry(
       () =>
-        PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}/members/`, {
+        PLANE_API.get(`/workspaces/${serviceConfig.WORKSPACE_SLUG}/members/`, {
           params: { page: 1, per_page: 100 },
         }),
       `fetchMembers`
@@ -157,10 +182,11 @@ async function fetchUserName(userId) {
  * Fetch all workspace members
  */
 async function getWorkspaceMembers() {
+  ensureApi();
   try {
     const response = await apiRequestWithRetry(
       () =>
-        PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}/members/`, {
+        PLANE_API.get(`/workspaces/${serviceConfig.WORKSPACE_SLUG}/members/`, {
           params: { page: 1, per_page: 100 },
         }),
       `getWorkspaceMembers`
@@ -177,11 +203,12 @@ async function getWorkspaceMembers() {
  * Fetch workspace details
  */
 async function getWorkspaceDetails() {
+  ensureApi();
   if (workspaceDetailsCache) return workspaceDetailsCache;
 
   try {
     const response = await apiRequestWithRetry(
-      () => PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}`),
+      () => PLANE_API.get(`/workspaces/${serviceConfig.WORKSPACE_SLUG}`),
       `getWorkspaceDetails`
     );
 
@@ -189,7 +216,7 @@ async function getWorkspaceDetails() {
     return workspaceDetailsCache;
   } catch (error) {
     logger.error(`Failed to fetch workspace details: ${error.message}`);
-    return { name: config.WORKSPACE_SLUG, slug: config.WORKSPACE_SLUG };
+    return { name: serviceConfig.WORKSPACE_SLUG, slug: serviceConfig.WORKSPACE_SLUG };
   }
 }
 
@@ -198,10 +225,11 @@ async function getWorkspaceDetails() {
  * @param {Object} params - Query parameters (actor, created_at__gte, etc.)
  */
 async function getWorkspaceActivities(params) {
+  ensureApi();
   try {
     const response = await apiRequestWithRetry(
       () =>
-        PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}/activities/`, {
+        PLANE_API.get(`/workspaces/${serviceConfig.WORKSPACE_SLUG}/activities/`, {
           params,
         }),
       `getWorkspaceActivities`
@@ -284,25 +312,35 @@ async function apiRequestWithRetry(requestFn, context = "") {
  * Fetch all projects in the workspace
  */
 async function fetchProjects() {
+  ensureApi();
+  // Return cached projects if available and not expired
+  if (
+    projectsCache &&
+    projectsCacheTime &&
+    Date.now() - projectsCacheTime < PROJECTS_CACHE_TTL_MS
+  ) {
+    return projectsCache;
+  }
+
   const projects = [];
   let cursor = null;
   let hasMore = true;
-  let fetchCount = 0;
+  let iteration = 0;
 
   while (hasMore) {
-    fetchCount++;
-    if (fetchCount > 10) {
-      logger.warn("Too many fetchProjects iterations, breaking");
+    iteration++;
+    if (iteration > 20) { // Same safety break
+      logger.warn(`Too many fetchProjects iterations, breaking`);
       break;
     }
 
     const params = cursor ? { cursor } : {};
     logger.debug(
-      `Fetching projects ${cursor ? `(cursor: ${cursor})` : "(page 1)"}`
+      `Fetching projects ${cursor ? `(cursor: ${cursor})` : `(page ${iteration})`}`
     );
     const response = await apiRequestWithRetry(
       () =>
-        PLANE_API.get(`/workspaces/${config.WORKSPACE_SLUG}/projects/`, {
+        PLANE_API.get(`/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/`, {
           params,
         }),
       "fetchProjects"
@@ -342,7 +380,7 @@ async function fetchProjects() {
   }
 
   logger.info(
-    `Fetched ${projects.length} projects total after ${fetchCount} iterations`
+    `Fetched ${projects.length} projects total after ${iteration} iterations`
   );
   return projects;
 }
@@ -351,6 +389,7 @@ async function fetchProjects() {
  * Fetch all work items from a project
  */
 async function fetchWorkItems(projectId) {
+  ensureApi();
   const workItems = [];
   let cursor = null;
   let hasMore = true;
@@ -363,7 +402,7 @@ async function fetchWorkItems(projectId) {
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
-          `/workspaces/${config.WORKSPACE_SLUG}/projects/${projectId}/work-items/`,
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/work-items/`,
           { params }
         ),
       `fetchWorkItems(${projectId})`
@@ -404,11 +443,12 @@ async function fetchWorkItems(projectId) {
  * Fetch activities for a work item
  */
 async function fetchWorkItemActivities(projectId, workItemId) {
+  ensureApi();
   try {
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
-          `/workspaces/${config.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/activities/`
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/activities/`
         ),
       `activities(${workItemId})`
     );
@@ -762,11 +802,12 @@ async function getWorkItemsSnapshot() {
  * @returns {Promise<Array>} List of cycles with completion info
  */
 async function fetchCycles(projectId) {
+  ensureApi();
   try {
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
-          `/workspaces/${config.WORKSPACE_SLUG}/projects/${projectId}/cycles/`
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/cycles/`
         ),
       `fetchCycles(${projectId})`
     );
@@ -800,7 +841,8 @@ async function fetchCycles(projectId) {
   }
 }
 
-module.exports = {
+export {
+  initPlaneService,
   fetchProjects,
   fetchWorkItems,
   fetchWorkItemActivities,

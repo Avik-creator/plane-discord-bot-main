@@ -4,16 +4,16 @@
  * Generates and displays a daily summary for a specific person.
  * Fetches data directly from Plane API - no database required.
  */
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const {
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import {
   getPersonDailySummary,
   generatePersonDailySummaryText,
   getPeople
-} = require("../services/personDailySummary");
-const { fetchProjects } = require("../services/planeApiDirect");
-const logger = require("../utils/logger");
+} from "../services/personDailySummary.js";
+import { fetchProjects } from "../services/planeApiDirect.js";
+import logger from "../utils/logger.js";
 
-module.exports = {
+export default {
   data: new SlashCommandBuilder()
     .setName("person_daily_summary")
     .setDescription("Get today's daily work summary for a specific person")

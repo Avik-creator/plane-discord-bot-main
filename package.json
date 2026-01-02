@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "description": "Discord bot for Plane project management with AI-powered team work summaries",
   "main": "src/index.js",
+  "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,19 +12,24 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "deploy": "node src/deploy-commands.js"
+    "deploy": "node src/deploy-commands.js",
+    "worker:dev": "wrangler dev",
+    "publish": "wrangler publish"
   },
   "dependencies": {
     "@ai-sdk/google": "^1.2.0",
     "ai": "^4.0.0",
     "axios": "^1.6.7",
+    "discord-interactions": "^3.4.0",
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5",
     "form-data": "^4.0.0",
+    "itty-router": "^4.0.23",
     "winston": "^3.17.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.1.0",
+    "wrangler": "^4.54.0"
   },
   "engines": {
     "node": ">=18.0.0"

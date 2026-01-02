@@ -1,19 +1,23 @@
-require("dotenv").config();
-const {
+import "dotenv/config";
+import {
   Client,
   Collection,
   Events,
   GatewayIntentBits,
   REST,
   Routes,
-} = require("discord.js");
-const fs = require("node:fs");
-const path = require("node:path");
-const config = require("./config/config");
-const logger = require("./utils/logger");
+} from "discord.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import config from "./config/config.enhanced.js";
+import logger from "./utils/logger.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Log startup information
-logger.info("Starting Discord bot...", {
+logger.info("Starting Discord bot (Gateway mode)...", {
   node_version: process.version,
   platform: process.platform,
 });
@@ -28,9 +32,11 @@ const commandFiles = fs
 
 const commandsData = [];
 
+// Initialize command loading
 for (const file of commandFiles) {
   const filePath = path.join(commandsPath, file);
-  const command = require(filePath);
+  const commandModule = await import(`file://${filePath}`);
+  const command = commandModule.default || commandModule;
   if ("data" in command && "execute" in command) {
     client.commands.set(command.data.name, command);
     commandsData.push(command.data.toJSON());

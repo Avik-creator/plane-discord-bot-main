@@ -1,10 +1,4 @@
-/**
- * Enhanced Configuration Module
- * Validates all required environment variables at startup
- *
- * No database required - direct API calls to Plane
- */
-require("dotenv").config();
+import "dotenv/config";
 
 const requiredEnvVars = [
   "DISCORD_TOKEN",
@@ -18,20 +12,24 @@ const requiredEnvVars = [
 const optionalEnvVars = {
   LOG_LEVEL: "info",
   ENABLE_FILE_LOGS: "false",
-  GEMINI_MODEL: "gemini-2.5-flash",
+  GEMINI_MODEL: "gemini-2.1-flash",
   GEMINI_TEMPERATURE: "0.3",
 };
 
-// Validate required environment variables
-const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
-if (missingVars.length > 0) {
-  console.error(
-    `❌ Missing required environment variables: ${missingVars.join(", ")}`
-  );
-  process.exit(1);
+// Validate required environment variables (only if not in Worker)
+const isWorker = typeof WebSocketPair !== 'undefined' || (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers');
+
+if (!isWorker) {
+  const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
+  if (missingVars.length > 0) {
+    console.error(
+      `❌ Missing required environment variables: ${missingVars.join(", ")}`
+    );
+    // process.exit(1); 
+  }
 }
 
-module.exports = {
+export default {
   // Discord
   DISCORD_TOKEN: process.env.DISCORD_TOKEN,
   DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID,

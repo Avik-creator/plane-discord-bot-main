@@ -1,7 +1,11 @@
-const { REST, Routes } = require("discord.js");
-const fs = require("node:fs");
-const path = require("node:path");
-const config = require("./config/config");
+import { REST, Routes } from "discord.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import config from "./config/config.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const commands = [];
 const commandsPath = path.join(__dirname, "commands");
@@ -11,7 +15,8 @@ const commandFiles = fs
 
 for (const file of commandFiles) {
   const filePath = path.join(commandsPath, file);
-  const command = require(filePath);
+  const commandModule = await import(`file://${filePath}`);
+  const command = commandModule.default || commandModule;
   if ("data" in command && "execute" in command) {
     commands.push(command.data.toJSON());
   }
