@@ -16,18 +16,73 @@ const router = Router();
 router.get('/', () => new Response('Plane Discord Bot is running!'));
 
 /**
+ * Send a follow-up message to Discord
+ */
+async function sendFollowUp(applicationId, interactionToken, content) {
+  const url = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+
+    if (!response.ok) {
+      logger.error(`Failed to send follow-up: ${response.status}`);
+    }
+  } catch (error) {
+    logger.error(`Error sending follow-up: ${error.message}`);
+  }
+}
+
+/**
+ * Process the command asynchronously
+ */
+async function processPersonDailySummary(interaction, env) {
+  const { options } = interaction.data;
+  const personName = options?.find(o => o.name === 'person')?.value;
+  const date = options?.find(o => o.name === 'date')?.value || new Date().toISOString().split('T')[0];
+  const projectFilter = options?.find(o => o.name === 'team')?.value;
+
+  try {
+    logger.info(`Processing summary for ${personName} on ${date}`);
+
+    const summary = await getPersonDailySummary({
+      personName,
+      date,
+      projectFilter,
+      workspaceSlug: env.WORKSPACE_SLUG
+    });
+
+    const text = await generatePersonDailySummaryText(summary, {
+      GEMINI_MODEL: env.GEMINI_MODEL,
+      GEMINI_TEMPERATURE: env.GEMINI_TEMPERATURE,
+      GOOGLE_GENERATIVE_AI_API_KEY: env.GOOGLE_GENERATIVE_AI_API_KEY
+    });
+
+    await sendFollowUp(interaction.application_id, interaction.token, text);
+    logger.info('Summary sent successfully');
+
+  } catch (error) {
+    logger.error(`Error generating summary: ${error.message}`, error);
+    await sendFollowUp(
+      interaction.application_id,
+      interaction.token,
+      `❌ Error generating summary: ${error.message}`
+    );
+  }
+}
+
+/**
  * Interaction Endpoint
  */
-router.post('/', async (request, env) => {
+router.post('/', async (request, env, ctx) => {
   const signature = request.headers.get('x-signature-ed25519');
   const timestamp = request.headers.get('x-signature-timestamp');
-
-  // Clone the request if we need to read the body multiple times, 
-  // but arrayBuffer() is fine here since we decode it ourselves.
   const body = await request.arrayBuffer();
 
   // 1. Verify Request
-  // Use env.DISCORD_PUBLIC_KEY which should be the hex string from Discord Dev Portal
   const isValidRequest = verifyKey(
     new Uint8Array(body),
     signature,
@@ -43,7 +98,7 @@ router.post('/', async (request, env) => {
   const interaction = JSON.parse(new TextDecoder().decode(body));
   logger.info(`Interaction received: Type ${interaction.type}`, { id: interaction.id });
 
-  // 2. Initialize Services with Environment Secrets
+  // 2. Initialize Services
   initPlaneService({
     PLANE_API_KEY: env.PLANE_API_KEY,
     PLANE_BASE_URL: env.PLANE_BASE_URL || 'https://plane.superalign.ai/api/v1',
@@ -56,49 +111,35 @@ router.post('/', async (request, env) => {
     return Response.json({ type: InteractionResponseType.PONG });
   }
 
-  // 4. Handle Commands
+  // 4. Handle Commands with DEFERRED RESPONSE
   if (interaction.type === InteractionType.APPLICATION_COMMAND) {
-    const { name, options } = interaction.data;
+    const { name } = interaction.data;
     logger.info(`Handling command: ${name}`);
 
     if (name === 'person_daily_summary') {
-      const personName = options?.find(o => o.name === 'person')?.value;
-      const date = options?.find(o => o.name === 'date')?.value || new Date().toISOString().split('T')[0];
-      const projectFilter = options?.find(o => o.name === 'team')?.value;
+      // Immediately respond with "thinking" message
+      const deferredResponse = Response.json({
+        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+      });
 
-      try {
-        const summary = await getPersonDailySummary({
-          personName,
-          date,
-          projectFilter,
-          workspaceSlug: env.WORKSPACE_SLUG
-        });
-        const text = await generatePersonDailySummaryText(summary, {
-          GEMINI_MODEL: env.GEMINI_MODEL,
-          GEMINI_TEMPERATURE: env.GEMINI_TEMPERATURE,
-          GOOGLE_GENERATIVE_AI_API_KEY: env.GOOGLE_GENERATIVE_AI_API_KEY
-        });
+      // Process the command asynchronously using waitUntil
+      ctx.waitUntil(processPersonDailySummary(interaction, env));
 
-        return Response.json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: { content: text }
-        });
-      } catch (error) {
-        logger.error(`Error generating summary: ${error.message}`, error);
-        return Response.json({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: { content: `Error generating summary: ${error.message}`, flags: 64 }
-        });
-      }
+      return deferredResponse;
     }
   }
 
-  // 5. Handle Autocomplete
+  // 5. Handle Autocomplete (these need to be fast!)
   if (interaction.type === InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE) {
     const { name, options } = interaction.data;
     const focusedOption = options?.find(o => o.focused);
 
-    if (!focusedOption) return Response.json({ type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, data: { choices: [] } });
+    if (!focusedOption) {
+      return Response.json({
+        type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+        data: { choices: [] }
+      });
+    }
 
     if (name === 'person_daily_summary' && focusedOption.name === 'person') {
       const people = await getPeople();
