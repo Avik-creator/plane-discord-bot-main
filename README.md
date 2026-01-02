@@ -1,280 +1,138 @@
-# Plane Discord Bot
+# Plane Discord Bot (Cloudflare Workers Edition)
 
-A Discord bot that integrates with [Plane](https://plane.so) project management platform, enabling teams to manage issues and get AI-powered work summaries directly from Discord.
+A serverless Discord bot that integrates with [Plane](https://plane.so) project management platform. This bot runs on Cloudflare Workers using the Discord Interactions Endpoint (Webhooks), making it highly scalable, cost-effective, and low-latency.
 
 ## Features
 
 - 📝 **Issue Management**
-
   - Create issues with custom priorities and states
   - View issue details with rich embeds
   - Get lists of issues filtered by status
   - Upload files to issues
 
-- 📊 **AI-Powered Team Summaries**
+- 📊 **AI-Powered Personal Summaries**
+  - **New**: `/person_daily_summary` command
+  - Rich Discord Embed output with sections for Completed, In Progress, Comments, and Cycles.
+  - Surgical user-level filtering (only shows YOUR work).
+  - Powered by Google's Gemini AI.
 
-  - Daily work summaries
-  - Weekly work summaries
-  - Team sync reports
-  - Powered by Google's Gemini AI
-
-- 🔗 **Seamless Integration**
-  - Direct integration with Plane API
-  - Real-time issue updates
-  - Interactive slash commands
+- ⚡ **Serverless Architecture**
+  - Runs on Cloudflare Workers.
+  - No persistent server required.
+  - Uses Discord Interactions (Webhooks).
+  - Handles long-running AI tasks via **Deferred Responses** to prevent timeouts.
 
 ## Prerequisites
 
-- Node.js >= 18.0.0
-- A Discord Bot Token
+- [Node.js](https://nodejs.org/) >= 18.0.0
+- [Cloudflare Account](https://dash.cloudflare.com/) with `wrangler` CLI installed
+- A Discord Bot / Application
 - A Plane account with API access
-- (Optional) Docker and Docker Compose for containerized deployment
+- Google Gemini API key (for summaries)
 
-## Installation
+## Getting Started
 
-### Local Development
+### 1. Installation
 
-1. **Clone the repository**
+```bash
+git clone https://github.com/yourusername/plane-discord-bot.git
+cd plane-discord-bot
+npm install
+```
 
-   ```bash
-   git clone https://github.com/yourusername/plane-discord-bot.git
-   cd plane-discord-bot
-   ```
+### 2. Discord Application Setup
 
-2. **Install dependencies**
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications).
+2. Create a new application.
+3. In the **General Information** tab, copy your **Application ID** and **Public Key**.
+4. In the **Bot** tab, generate a **Token**.
 
-   ```bash
-   npm install
-   ```
+### 3. Local Configuration (Secrets)
 
-3. **Set up environment variables**
+Cloudflare Workers use secrets for sensitive data. You can set them using Wrangler:
 
-   Create a `.env` file in the root directory:
+```bash
+# Required for Discord
+npx wrangler secret put DISCORD_TOKEN
+npx wrangler secret put DISCORD_PUBLIC_KEY
+npx wrangler secret put DISCORD_APPLICATION_ID
 
+# Required for Plane
+npx wrangler secret put PLANE_API_KEY
+npx wrangler secret put WORKSPACE_SLUG
+
+# Required for AI Summaries
+npx wrangler secret put GOOGLE_GENERATIVE_AI_API_KEY
+```
+
+Non-sensitive variables are managed in `wrangler.toml`:
+```toml
+[vars]
+PLANE_BASE_URL = "https://plane.superalign.ai/api/v1"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_TEMPERATURE = 0.3
+```
+
+### 4. Deploying Commands
+
+Before running the worker, you must register the slash commands with Discord:
+
+1. Create a `.env` file for the registration script:
    ```env
-   # Discord Configuration
-   DISCORD_TOKEN=your_discord_bot_token
-   DISCORD_CLIENT_ID=your_discord_application_id
-
-   # Plane Configuration
-   PLANE_API_KEY=your_plane_api_key
-   WORKSPACE_SLUG=your_workspace_slug
-
-   # Optional: Logging Configuration
-   LOG_LEVEL=info
-   ENABLE_FILE_LOGS=false
-
-   # Optional: AI Configuration (for summaries)
-   GOOGLE_API_KEY=your_google_gemini_api_key
+   DISCORD_TOKEN=your_token
+   DISCORD_APPLICATION_ID=your_app_id
    ```
-
-4. **Deploy commands to Discord**
-
+2. Run the deployment script:
    ```bash
    npm run deploy
    ```
 
-5. **Start the bot**
+### 5. Local Development
 
-   ```bash
-   npm start
-   ```
+To test locally, use `wrangler dev` and a tunnel like `ngrok` to expose your local port (default 8787) to Discord:
 
-   For development with auto-reload:
+```bash
+# Start local worker
+npx wrangler dev --local --port 8787
 
-   ```bash
-   npm run dev
-   ```
+# In another terminal, start ngrok
+ngrok http 8787
+```
 
-### Docker Deployment
+Copy the ngrok URL and paste it into the **Interactions Endpoint URL** field in your Discord Developer Portal (App -> General Information). Use `https://your-ngrok-url.com`.
 
-1. **Using Docker Compose (Recommended)**
+### 6. Production Deployment
 
-   ```bash
-   docker-compose up -d
-   ```
+```bash
+npm run publish
+```
 
-2. **Using Docker directly**
-   ```bash
-   docker build -t plane-discord-bot .
-   docker run -d --env-file .env plane-discord-bot
-   ```
-
-## Getting Your Credentials
-
-### Discord Bot Setup
-
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application
-3. Go to the "Bot" section and create a bot
-4. Copy the bot token (this is your `DISCORD_TOKEN`)
-5. Copy the Application ID from the "General Information" section (this is your `DISCORD_CLIENT_ID`)
-6. Enable the following bot permissions:
-   - Send Messages
-   - Use Slash Commands
-   - Embed Links
-   - Attach Files
-7. Invite the bot to your server using the OAuth2 URL generator with `applications.commands` and `bot` scopes
-
-### Plane API Setup
-
-1. Log in to your [Plane](https://plane.so) workspace
-2. Go to Settings → API Tokens
-3. Generate a new API token (this is your `PLANE_API_KEY`)
-4. Your workspace slug is the URL path: `https://app.plane.so/{workspace_slug}`
-
-### Google Gemini API (Optional - for AI summaries)
-
-1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Create an API key
-3. Add it as `GOOGLE_API_KEY` in your `.env` file
+Once deployed, update the **Interactions Endpoint URL** in Discord to your worker's production URL (e.g., `https://plane-bot.yourname.workers.dev`).
 
 ## Available Commands
 
-| Command                | Description                        | Options                                                  |
-| ---------------------- | ---------------------------------- | -------------------------------------------------------- |
-| `/create-issue`        | Create a new issue in Plane        | title, description, priority, state                      |
-| `/view-issue`          | View details of a specific issue   | issue-id                                                 |
-| `/get-issues`          | Get a list of issues               | state (all, backlog, todo, in-progress, done, cancelled) |
-| `/upload-file`         | Upload a file to an issue          | issue-id, file                                           |
-| `/team-daily-summary`  | Get AI-powered daily team summary  | -                                                        |
-| `/team-weekly-summary` | Get AI-powered weekly team summary | -                                                        |
-| `/team-sync`           | Get team synchronization report    | -                                                        |
+| Command                 | Description                                     |
+| ----------------------- | ----------------------------------------------- |
+| `/person_daily_summary` | Get your personalized AI daily summary in RADAR |
+| `/create-issue`         | Create a new issue in Plane                     |
+| `/view-issue`           | View details of a specific issue                |
+| `/get-issues`           | Get a list of issues by status                  |
+| `/upload-file`          | Upload a file to an issue                       |
 
 ## Project Structure
 
-```
-plane-discord-bot/
-├── src/
-│   ├── commands/          # Discord slash commands
-│   │   ├── createIssue.js
-│   │   ├── viewIssue.js
-│   │   ├── getIssues.js
-│   │   ├── uploadFile.js
-│   │   ├── teamDailySummary.js
-│   │   ├── teamWeeklySummary.js
-│   │   └── teamSync.js
-│   ├── config/            # Configuration files
-│   │   ├── config.js
-│   │   └── config.enhanced.js
-│   ├── services/          # External service integrations
-│   │   ├── planeApi.js
-│   │   └── planeApiDirect.js
-│   └── utils/             # Utility functions
-│       ├── logger.js
-│       └── utils.js
-├── docker-compose.yml     # Docker Compose configuration
-├── Dockerfile             # Development Dockerfile
-├── Dockerfile.production  # Production Dockerfile
-├── package.json
-└── .env.example          # Environment variables template
-
-```
-
-## Configuration
-
-### Environment Variables
-
-| Variable            | Required | Description                              | Default |
-| ------------------- | -------- | ---------------------------------------- | ------- |
-| `DISCORD_TOKEN`     | ✅       | Your Discord bot token                   | -       |
-| `DISCORD_CLIENT_ID` | ✅       | Your Discord application ID              | -       |
-| `PLANE_API_KEY`     | ✅       | Your Plane API key                       | -       |
-| `WORKSPACE_SLUG`    | ✅       | Your Plane workspace slug                | -       |
-| `GOOGLE_API_KEY`    | ❌       | Google Gemini API key (for AI summaries) | -       |
-| `LOG_LEVEL`         | ❌       | Logging level (debug, info, warn, error) | `info`  |
-| `ENABLE_FILE_LOGS`  | ❌       | Enable file-based logging                | `false` |
-
-### Database (Docker Deployment)
-
-When using Docker Compose, PostgreSQL is included:
-
-| Variable            | Required | Description                       | Default             |
-| ------------------- | -------- | --------------------------------- | ------------------- |
-| `POSTGRES_USER`     | ❌       | PostgreSQL username               | `plane_bot`         |
-| `POSTGRES_PASSWORD` | ❌       | PostgreSQL password               | `changeme`          |
-| `POSTGRES_DB`       | ❌       | PostgreSQL database name          | `plane_discord_bot` |
-| `DATABASE_URL`      | ❌       | Full PostgreSQL connection string | Auto-generated      |
-
-## Development
-
-### Adding New Commands
-
-1. Create a new file in `src/commands/yourCommand.js`
-2. Follow the Discord.js slash command structure:
-
-   ```javascript
-   const { SlashCommandBuilder } = require("discord.js");
-
-   module.exports = {
-     data: new SlashCommandBuilder()
-       .setName("your-command")
-       .setDescription("Command description"),
-     async execute(interaction) {
-       // Your command logic here
-     },
-   };
-   ```
-
-3. Run `npm run deploy` to register the command with Discord
-
-### Logging
-
-The bot uses Winston for structured logging:
-
-```javascript
-const logger = require("./utils/logger");
-
-logger.info("Info message", { metadata: "value" });
-logger.error("Error message", { error: err });
-logger.debug("Debug message");
-```
+- `src/server.js`: Main Cloudflare Worker entry point (handles routing & verification).
+- `src/services/personDailySummary.js`: Logic for fetching and summarizing personal activity.
+- `src/services/planeApiDirect.js`: The direct API client for interacting with Plane.
+- `wrangler.toml`: Worker configuration and environment variables.
+- `src/deploy-commands.js`: Script to register slash commands with Discord.
 
 ## Troubleshooting
 
-### Bot doesn't respond to commands
-
-- Ensure the bot has proper permissions in your Discord server
-- Check that commands are deployed: `npm run deploy`
-- Verify the bot is online in your Discord server
-- Check logs for errors: set `LOG_LEVEL=debug` in `.env`
-
-### Plane API errors
-
-- Verify your `PLANE_API_KEY` is valid
-- Check that your `WORKSPACE_SLUG` is correct
-- Ensure your API key has necessary permissions in Plane
-
-### AI summaries not working
-
-- Verify `GOOGLE_API_KEY` is set and valid
-- Check Google AI Studio for API usage limits
-- Ensure your Plane workspace has issues with activity
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+- **"Invalid Request Signature"**: Ensure `DISCORD_PUBLIC_KEY` is correct in your secrets.
+- **"Application did not respond"**: The bot uses Deferred Responses. Ensure the Worker has enough time to finish background tasks (up to 30s).
+- **AI Key Missing**: Ensure `GOOGLE_GENERATIVE_AI_API_KEY` is correctly set via `wrangler secret put`.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For issues, questions, or contributions, please open an issue on the GitHub repository.
-
-## Acknowledgments
-
-- Built with [Discord.js](https://discord.js.org/)
-- Integrates with [Plane](https://plane.so)
-- AI powered by [Google Gemini](https://ai.google.dev/)
-
----
-
-Made with ❤️ for better team collaboration
+MIT License.
