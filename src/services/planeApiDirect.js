@@ -23,9 +23,9 @@ const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
 function initPlaneService(config) {
   serviceConfig = config;
   PLANE_API = axios.create({
-    baseURL: config.PLANE_BASE_URL,
+    baseURL: serviceConfig.PLANE_BASE_URL,
     headers: {
-      "X-API-KEY": config.PLANE_API_KEY,
+      "X-API-KEY": serviceConfig.PLANE_API_KEY,
       "Content-Type": "application/json",
     },
     timeout: REQUEST_TIMEOUT_MS,
@@ -38,21 +38,7 @@ function initPlaneService(config) {
  */
 function ensureApi() {
   if (!PLANE_API) {
-    // If we're in a Worker, we MUST have called initPlaneService already.
-    // We don't want to try requiring the Node config which depends on 'dotenv'.
-    const isWorker = typeof WebSocketPair !== 'undefined' || (typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers');
-
-    if (isWorker) {
-      throw new Error("Plane API service not initialized in Worker. Call initPlaneService(env) in the fetch handler.");
-    }
-
-    try {
-      // For Node.js environments, we can fall back to the config file
-      const defaultConfig = require("../config/config.enhanced");
-      initPlaneService(defaultConfig);
-    } catch (e) {
-      throw new Error("Plane API service not initialized. Call initPlaneService(config) first.");
-    }
+    throw new Error("Plane API service not initialized. Call initPlaneService(config) first.");
   }
 }
 
@@ -94,7 +80,7 @@ async function fetchWorkItemComments(projectId, workItemId) {
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
-          `/workspaces/${config.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/comments/`
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/comments/`
         ),
       `comments(${workItemId})`
     );
@@ -115,7 +101,7 @@ async function fetchWorkItemSubitems(projectId, workItemId) {
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
-          `/workspaces/${config.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/sub-issues/`
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/sub-issues/`
         ),
       `subitems(${workItemId})`
     );

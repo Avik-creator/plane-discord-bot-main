@@ -5,7 +5,7 @@ import {
   fetchCycles
 } from "./planeApiDirect.js";
 import { generateText } from "ai";
-import { google } from "@ai-sdk/google";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import logger from "../utils/logger.js";
 
 /**
@@ -241,7 +241,7 @@ If the person has no activity at all, respond with:
 /**
  * Generate human-readable text from a structured person daily summary
  */
-export async function generatePersonDailySummaryText(summary, config = {}) {
+export async function generatePersonDailySummaryText(summary, env = {}) {
   if (!summary.person || !summary.date) {
     throw new Error("summary must contain person and date fields");
   }
@@ -250,15 +250,17 @@ export async function generatePersonDailySummaryText(summary, config = {}) {
     return `No activity recorded for ${summary.person} on ${summary.date}.`;
   }
 
-  const model = config.GEMINI_MODEL || "gemini-1.5-flash";
-  const apiKey = config.GOOGLE_GENERATIVE_AI_API_KEY;
+  const modelName = env.GEMINI_MODEL || "gemini-1.5-flash";
+  const apiKey = env.GOOGLE_GENERATIVE_AI_API_KEY;
 
   try {
+    const google = createGoogleGenerativeAI({ apiKey });
+
     const result = await generateText({
-      model: google(model),
+      model: google(modelName),
       system: PERSON_SUMMARY_SYSTEM_PROMPT,
       prompt: `Convert this person's daily work summary into readable text. Do NOT add any information that is not in this data.\n\nSUMMARY DATA:\n${JSON.stringify(summary, null, 2)}`,
-      temperature: config.GEMINI_TEMPERATURE || 0.3,
+      temperature: env.GEMINI_TEMPERATURE || 0.3,
     });
 
     return result.text;

@@ -6,7 +6,7 @@ compatibility_flags = [ "nodejs_compat" ]
 [vars]
 PLANE_BASE_URL = "https://plane.superalign.ai/api/v1"
 GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_TEMPERATURE = "0.3"
+GEMINI_TEMPERATURE = 0.3
 
 # Secrets to be set via 'wrangler secret put':
 # DISCORD_TOKEN
