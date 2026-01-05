@@ -180,15 +180,77 @@ export async function getPersonDailySummary({
     projectLookup.set(proj.name, proj);
   }
 
+  // Use the queried date to find the relevant cycle, not today's date
+  // Parse date string (YYYY-MM-DD) as UTC start of day
+  const [year, month, day] = date.split('-').map(Number);
+  const queryDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+  
   const cycleData = new Map();
   for (const projectId of projectIds) {
     const proj = projectLookup.get(projectId);
     if (proj) {
       const allCycles = await getCyclesWithCache(proj.id);
-      // Filter for active or current cycles only to avoid clutter
-      const activeCycles = allCycles.filter(c => c.isCurrent || c.isActive);
-      logger.info(`Project ${projectId} cycles: ${JSON.stringify(activeCycles.map(c => ({ name: c.name, isCurrent: c.isCurrent })))}`);
-      cycleData.set(projectId, activeCycles);
+      
+      // Debug: log all cycles
+      logger.info(`Project ${projectId} has ${allCycles.length} total cycles`);
+      if (allCycles.length > 0) {
+        logger.info(`All cycles: ${JSON.stringify(allCycles.map(c => ({ 
+          name: c.name, 
+          startDate: c.startDate, 
+          endDate: c.endDate,
+          totalIssues: c.totalIssues,
+          completedIssues: c.completedIssues
+        })))}`);
+      }
+      
+      // Filter for cycles that contain the queried date
+      const relevantCycles = allCycles.filter(c => {
+        if (!c.startDate || !c.endDate) {
+          logger.debug(`Cycle ${c.name} has no start/end date, skipping date-based match`);
+          return false;
+        }
+        const cycleStart = new Date(c.startDate);
+        const cycleEnd = new Date(c.endDate);
+        
+        // Compare dates (ignore time portion) - check if queryDate falls within cycle range
+        const cycleStartDate = new Date(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth(), cycleStart.getUTCDate());
+        const cycleEndDate = new Date(cycleEnd.getUTCFullYear(), cycleEnd.getUTCMonth(), cycleEnd.getUTCDate());
+        const queryDateLocal = new Date(queryDate.getUTCFullYear(), queryDate.getUTCMonth(), queryDate.getUTCDate());
+        
+        const isInRange = queryDateLocal >= cycleStartDate && queryDateLocal <= cycleEndDate;
+        logger.debug(`Cycle ${c.name}: ${c.startDate} to ${c.endDate}, queryDate ${date}, inRange: ${isInRange}`);
+        return isInRange;
+      });
+      
+      // If no cycles matched by date, try matching work items to cycles
+      if (relevantCycles.length === 0 && allCycles.length > 0) {
+        logger.info(`No cycles matched by date range for ${projectId}, checking work items for cycle hints`);
+        
+        // Get work items for this project from personActivities
+        const projectActivities = personActivities.filter(a => a.project === projectId);
+        const mentionedCycleNames = new Set();
+        
+        // Look for patterns like "Week X" in work items
+        for (const activity of projectActivities) {
+          if (activity.workItemName && activity.workItemName.includes('Week')) {
+            const weekMatch = activity.workItemName.match(/Week\s+(\d+)/i);
+            if (weekMatch) {
+              mentionedCycleNames.add(`Week ${weekMatch[1]}`);
+            }
+          }
+        }
+        
+        // Match cycles by name if we found cycle hints
+        if (mentionedCycleNames.size > 0) {
+          const cyclesByName = allCycles.filter(c => mentionedCycleNames.has(c.name));
+          logger.info(`Found cycles by name matching work items: ${JSON.stringify(cyclesByName.map(c => c.name))}`);
+          cycleData.set(projectId, cyclesByName);
+          continue;
+        }
+      }
+      
+      logger.info(`Project ${projectId} relevant cycles for date ${date}: ${JSON.stringify(relevantCycles.map(c => ({ name: c.name, startDate: c.startDate, endDate: c.endDate })))}`);
+      cycleData.set(projectId, relevantCycles);
     }
   }
 
@@ -234,30 +296,32 @@ STRICT RULES:
 OUTPUT FORMAT (for each project):
 
 **Project Name**
-Cycle Name -> X% completed
+[Cycle information - see below]
 
 **Person Name**
 
 **Tasks/SubTasks Done:**
 • TASK-ID: Task Name
-• SUBTASK-ID: Subtask Name
-(write "None" if none)
+[or "None" if no completed items]
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
-• SUBTASK-ID: Subtask Name (State)
-(write "None" if none)
+[or "None" if no in-progress items]
+
+CYCLE FORMAT:
+- If cycles array has items: display each cycle as "Cycle Name -> X% completed" on separate lines
+- Example: Week 16 -> 43% completed
+- If cycles array is empty: display nothing for cycles
 
 INSTRUCTIONS:
 1. For each project in the data, create a new section
 2. Show the project name in bold exactly as provided
-3. For cycles: show "Cycle Name -> X% completed" where X is the percentage_complete value
+3. For cycles: show each cycle name with arrow and percentage. Percentage comes from percentage_complete field
 4. Use the person's name in bold exactly as provided
-5. List all completed work items and subtasks under "Tasks/SubTasks Done"
-6. List all in-progress work items and subtasks under "Tasks/SubTasks in Progress"
-7. Format: ID: Name (State) for in-progress items
-8. Include subitems in the appropriate section based on their state
-9. If no activities exist, respond with: "No activity recorded for [Person] on [Date]."`;
+5. List all completed work items and subtasks under "Tasks/SubTasks Done" using format: ID: Name
+6. List all in-progress work items and subtasks under "Tasks/SubTasks in Progress" using format: ID: Name (State)
+7. Include subitems in appropriate section based on their state
+8. If no activities exist, respond with: "No activity recorded for [Person] on [Date]."`;
 
 /**
  * Generate human-readable text from a structured person daily summary
