@@ -168,6 +168,7 @@ export async function getPersonDailySummary({
       comments: projectData.comments.map(c => ({ id: c.id, name: c.name, comment: c.comment })),
       subitems: projectData.subitems.map(s => ({ id: s.id, name: s.name, parent: s.parent, state: s.state, progressPercentage: s.progressPercentage })),
       blockers,
+      cycles: [], // Will be filled with cycle data below
     });
   }
 
@@ -190,48 +191,71 @@ export async function getPersonDailySummary({
     }
   }
 
+  // Enhance projects with cycle details and calculated completion percentages
+  const enhancedProjects = projects.map(p => {
+    const cycles = cycleData.get(p.project) || [];
+    const cyclesWithCompletion = cycles.map(cycle => {
+      const totalIssues = (cycle.total_issues || 0);
+      const completedIssues = (cycle.completed_issues || 0);
+      const percentageComplete = totalIssues > 0 ? Math.round((completedIssues / totalIssues) * 100) : 0;
+      return {
+        name: cycle.name,
+        status: cycle.state || 'started',
+        total_issues: totalIssues,
+        completed_issues: completedIssues,
+        percentage_complete: percentageComplete,
+      };
+    });
+    return {
+      ...p,
+      cycles: cyclesWithCompletion,
+    };
+  });
+
   return {
     person: personName,
     date,
     team: workspaceSlug || "Workspace",
-    projects: projects.map(p => ({
-      ...p,
-      cycles: cycleData.get(p.project) || [],
-    })),
+    projects: enhancedProjects,
   };
 }
 
-const PERSON_SUMMARY_SYSTEM_PROMPT = `You are a work activity formatter. Your ONLY job is to convert a structured person work summary into readable text using a specific format.
+const PERSON_SUMMARY_SYSTEM_PROMPT = `You are a work activity formatter. Your ONLY job is to convert a structured person work summary into the EXACT format specified below.
 
 STRICT RULES:
-1. ONLY describe data that is explicitly provided in the summary
-2. DO NOT infer intent, productivity, mood, or additional context
-3. DO NOT add encouragement, opinions, praise, or commentary
-4. DO NOT use marketing or emotional language
-5. Use clear, professional, factual language
+1. Output ONLY the exact format shown - no deviations
+2. Include ALL projects, cycles, and tasks provided in the data
+3. DO NOT add explanations, commentary, or inferred information
+4. Use bullet points (•) for task lists
+5. Use the exact field values provided - do not modify or summarize
+6. Show completion percentages exactly as provided
 
-OUTPUT FORMAT:
-For each project the person worked on, output:
+OUTPUT FORMAT (for each project):
 Project Name
-Cycle Name - Cycle Status -> %completed
+Cycle Name - Cycle Status -> X% completed
 
-<Person Name>
-<Tasks/SubTasks Done>
-<Tasks/SubTasks in Progress>
+Person Name
 
-- Replace "Project Name" with the actual project name
-- Replace "Cycle Name" with the actual cycle name
-- Replace "%completed" with the cycle completion percentage (calculate as: completedIssues/totalIssues * 100, round to nearest integer)
-- If no cycles exist for the project, use "No active cycles"
-- Replace "<Person Name>" with the person's name
-- List completed tasks/subtasks under "Tasks/SubTasks Done" (use bullet points, include work item ID and name)
-- List in-progress tasks/subtasks under "Tasks/SubTasks in Progress" (use bullet points, include work item ID, name, and state)
-- If no completed work, show empty "Tasks/SubTasks Done" section
-- If no work in progress, show empty "Tasks/SubTasks in Progress" section
-- Separate each project with a blank line
+Tasks/SubTasks Done:
+• TASK-ID: Task Name
+• SUBTASK-ID: Subtask Name
+(empty if none)
 
-If the person has no activity at all, respond with:
-"No activity recorded for [Person] on [Date]."`;
+Tasks/SubTasks in Progress:
+• TASK-ID: Task Name (State)
+• SUBTASK-ID: Subtask Name (State)
+(empty if none)
+
+INSTRUCTIONS:
+1. For each project in the data, create a new section
+2. Show the project name exactly as provided
+3. For cycles: use the cycle name and status from the data. Completion percentage is provided as 'percentage_complete'
+4. Use the person's name exactly as provided
+5. List all completed work items and subtasks under "Tasks/SubTasks Done"
+6. List all in-progress work items and subtasks under "Tasks/SubTasks in Progress"
+7. Format: ID: Name (State) for in-progress items
+8. Separate sections with blank lines
+9. If no activities exist, respond with: "No activity recorded for [Person] on [Date]."`;
 
 /**
  * Generate human-readable text from a structured person daily summary
@@ -254,7 +278,7 @@ export async function generatePersonDailySummaryText(summary, env = {}) {
     const result = await generateText({
       model: google(modelName),
       system: PERSON_SUMMARY_SYSTEM_PROMPT,
-      prompt: `Convert this person's daily work summary into readable text. Do NOT add any information that is not in this data.\n\nSUMMARY DATA:\n${JSON.stringify(summary, null, 2)}`,
+      prompt: `Format this person's daily work summary exactly according to the format specification. Use ALL data provided. Do not omit, summarize, or modify any values.\n\nPERSON: ${summary.person}\nDATE: ${summary.date}\nWORKSPACE: ${summary.team}\n\nWORK DATA:\n${JSON.stringify(summary.projects, null, 2)}\n\nGenerate the formatted output now:`,
       temperature: env.GEMINI_TEMPERATURE || 0.3,
     });
 
