@@ -8,9 +8,9 @@ PLANE_BASE_URL = "https://plane.superalign.ai/api/v1"
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = 0.3
 
-# Cron trigger for daily summary at 9AM IST (3:30 AM UTC)
+# Cron trigger for daily summary at 8:00 PM IST (2:30 PM UTC) - Every day
 [triggers]
-crons = ["30 3 * * *"]
+crons = ["30 14 * * *"]
 
 # Secrets to be set via 'wrangler secret put':
 # DISCORD_TOKEN
