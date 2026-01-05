@@ -1106,6 +1106,19 @@ async function getCyclesWithCache(projectId) {
   return requestPromise;
 }
 
+/**
+ * Clear activity-related caches to ensure fresh data for each person
+ * This prevents data mixing between different users' summaries
+ */
+function clearActivityCaches() {
+  activitiesCache.clear();
+  commentsCache.clear();
+  subitemsCache.clear();
+  // Clear pending requests to avoid stale promises
+  pendingRequests.clear();
+  logger.debug('Cleared activity caches for fresh data fetch');
+}
+
 export {
   initPlaneService,
   fetchProjects,
@@ -1124,4 +1137,5 @@ export {
   getWorkspaceActivities,
   fetchCycles,
   getCyclesWithCache,
+  clearActivityCaches,
 };
