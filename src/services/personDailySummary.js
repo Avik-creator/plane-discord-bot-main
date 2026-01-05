@@ -2,7 +2,7 @@ import {
   getTeamActivities,
   getWorkspaceMembers,
   fetchProjects,
-  fetchCycles
+  getCyclesWithCache
 } from "./planeApiDirect.js";
 import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -184,9 +184,10 @@ export async function getPersonDailySummary({
   for (const projectId of projectIds) {
     const proj = projectLookup.get(projectId);
     if (proj) {
-      const allCycles = await fetchCycles(proj.id);
+      const allCycles = await getCyclesWithCache(proj.id);
       // Filter for active or current cycles only to avoid clutter
-      const activeCycles = allCycles.filter(c => c.is_current || c.state === 'started');
+      const activeCycles = allCycles.filter(c => c.isCurrent || c.isActive);
+      logger.info(`Project ${projectId} cycles: ${JSON.stringify(activeCycles.map(c => ({ name: c.name, isCurrent: c.isCurrent })))}`);
       cycleData.set(projectId, activeCycles);
     }
   }
@@ -195,12 +196,12 @@ export async function getPersonDailySummary({
   const enhancedProjects = projects.map(p => {
     const cycles = cycleData.get(p.project) || [];
     const cyclesWithCompletion = cycles.map(cycle => {
-      const totalIssues = (cycle.total_issues || 0);
-      const completedIssues = (cycle.completed_issues || 0);
+      const totalIssues = cycle.totalIssues || 0;
+      const completedIssues = cycle.completedIssues || 0;
       const percentageComplete = totalIssues > 0 ? Math.round((completedIssues / totalIssues) * 100) : 0;
       return {
         name: cycle.name,
-        status: cycle.state || 'started',
+        status: cycle.isCurrent ? 'Current' : (cycle.isActive ? 'Active' : 'Completed'),
         total_issues: totalIssues,
         completed_issues: completedIssues,
         percentage_complete: percentageComplete,
@@ -231,30 +232,31 @@ STRICT RULES:
 6. Show completion percentages exactly as provided
 
 OUTPUT FORMAT (for each project):
-Project Name
-Cycle Name - Cycle Status -> X% completed
 
-Person Name
+**Project Name**
+Cycle Name -> X% completed
 
-Tasks/SubTasks Done:
+**Person Name**
+
+**Tasks/SubTasks Done:**
 • TASK-ID: Task Name
 • SUBTASK-ID: Subtask Name
-(empty if none)
+(write "None" if none)
 
-Tasks/SubTasks in Progress:
+**Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
 • SUBTASK-ID: Subtask Name (State)
-(empty if none)
+(write "None" if none)
 
 INSTRUCTIONS:
 1. For each project in the data, create a new section
-2. Show the project name exactly as provided
-3. For cycles: use the cycle name and status from the data. Completion percentage is provided as 'percentage_complete'
-4. Use the person's name exactly as provided
+2. Show the project name in bold exactly as provided
+3. For cycles: show "Cycle Name -> X% completed" where X is the percentage_complete value
+4. Use the person's name in bold exactly as provided
 5. List all completed work items and subtasks under "Tasks/SubTasks Done"
 6. List all in-progress work items and subtasks under "Tasks/SubTasks in Progress"
 7. Format: ID: Name (State) for in-progress items
-8. Separate sections with blank lines
+8. Include subitems in the appropriate section based on their state
 9. If no activities exist, respond with: "No activity recorded for [Person] on [Date]."`;
 
 /**

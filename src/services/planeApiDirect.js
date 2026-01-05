@@ -11,7 +11,7 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_WORK_ITEMS_PER_PROJECT = 200;
 const MAX_ACTIVITIES_PER_ITEM = 20;
 const REQUEST_TIMEOUT_MS = 45000;
-const MAX_CONCURRENT_ACTIVITY_FETCHES = 3; // Lowered to avoid 429s
+const MAX_CONCURRENT_ACTIVITY_FETCHES = 5; // Lowered to avoid 429s
 const BATCH_DELAY_MS = 1000; // Delay between batches
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
@@ -48,8 +48,38 @@ let projectsCacheTime = null;
 let workspaceDetailsCache = null;
 let usersCache = new Map(); // Map of userId -> user details
 
+// Work items cache: Map of projectId -> { data: items[], timestamp: number }
+const WORK_ITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let workItemsCache = new Map();
+
+// Activities cache: Map of workItemId -> { data: activities[], timestamp: number }
+const ACTIVITIES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let activitiesCache = new Map();
+
+// Comments cache: Map of workItemId -> { data: comments[], timestamp: number }
+const COMMENTS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let commentsCache = new Map();
+
+// Subitems cache: Map of workItemId -> { data: subitems[], timestamp: number }
+const SUBITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let subitemsCache = new Map();
+
+// Cycles cache: Map of projectId -> { data: cycles[], timestamp: number }
+const CYCLES_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+let cyclesCache = new Map();
+
+// Request deduplication: Map of key -> Promise to avoid duplicate API calls
+const pendingRequests = new Map();
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Check if cache entry is still valid
+ */
+function isCacheValid(timestamp, ttl) {
+  return timestamp && Date.now() - timestamp < ttl;
 }
 
 /**
@@ -379,8 +409,11 @@ async function fetchWorkItems(projectId) {
   const workItems = [];
   let cursor = null;
   let hasMore = true;
+  let iteration = 0;
+  const MAX_ITERATIONS = 10; // Safety limit to prevent infinite loops
 
-  while (hasMore && workItems.length < MAX_WORK_ITEMS_PER_PROJECT) {
+  while (hasMore && workItems.length < MAX_WORK_ITEMS_PER_PROJECT && iteration < MAX_ITERATIONS) {
+    iteration++;
     const params = {
       order_by: "-updated_at", // Fetch most recently updated first
       ...(cursor ? { cursor } : {}),
@@ -395,11 +428,14 @@ async function fetchWorkItems(projectId) {
     );
 
     const data = response.data;
+    const resultsCount = Array.isArray(data) ? data.length : data.results?.length || 0;
+    
     logger.info(
       `Work items API response: ${JSON.stringify({
         isArray: Array.isArray(data),
         hasResults: !!data.results,
-        count: Array.isArray(data) ? data.length : data.results?.length || 0,
+        count: resultsCount,
+        iteration,
       })}`
     );
 
@@ -408,7 +444,8 @@ async function fetchWorkItems(projectId) {
         ...data.slice(0, MAX_WORK_ITEMS_PER_PROJECT - workItems.length)
       );
       hasMore = false;
-    } else if (data.results) {
+    } else if (data.results && data.results.length > 0) {
+      // Only continue if we actually got results
       workItems.push(
         ...data.results.slice(0, MAX_WORK_ITEMS_PER_PROJECT - workItems.length)
       );
@@ -418,10 +455,16 @@ async function fetchWorkItems(projectId) {
           : null;
       hasMore = !!cursor;
     } else {
+      // Empty results or no results - stop pagination
       hasMore = false;
     }
   }
 
+  if (iteration >= MAX_ITERATIONS) {
+    logger.warn(`fetchWorkItems hit max iterations (${MAX_ITERATIONS}) for project ${projectId}`);
+  }
+
+  logger.info(`Fetched ${workItems.length} work items for project ${projectId} in ${iteration} iterations`);
   return workItems;
 }
 
@@ -515,7 +558,7 @@ async function _getTeamActivitiesInternal(
     // Fetch work items for this project
     let workItems;
     try {
-      workItems = await fetchWorkItems(projectId);
+      workItems = await getWorkItemsWithCache(projectId);
     } catch (error) {
       if (error.response?.status === 403) {
         logger.warn(`Skipping project ${projectIdentifier}: no access (403)`);
@@ -525,6 +568,12 @@ async function _getTeamActivitiesInternal(
     }
 
     logger.info(`Project ${projectIdentifier}: ${workItems.length} work items`);
+
+    // Skip if no work items found
+    if (workItems.length === 0) {
+      logger.info(`Skipping ${projectIdentifier} - no work items`);
+      continue;
+    }
 
     for (const workItem of workItems) {
       const workItemId = workItem.id;
@@ -561,7 +610,7 @@ async function _getTeamActivitiesInternal(
     activityFetchTasks.map((task) =>
       limiter.run(async () => {
         try {
-          const itemActivities = await fetchWorkItemActivities(
+          const itemActivities = await getActivitiesWithCache(
             task.projectId,
             task.workItemId
           );
@@ -610,7 +659,7 @@ async function _getTeamActivitiesInternal(
 
           // Fetch and add comments
           try {
-            const comments = await fetchWorkItemComments(
+            const comments = await getCommentsWithCache(
               task.projectId,
               task.workItemId
             );
@@ -653,7 +702,7 @@ async function _getTeamActivitiesInternal(
 
           // Fetch and add subitems with progress info
           try {
-            const subitems = await fetchWorkItemSubitems(
+            const subitems = await getSubitemsWithCache(
               task.projectId,
               task.workItemId
             );
@@ -769,7 +818,7 @@ async function getWorkItemsSnapshot() {
     const projectId = project.id;
     const projectIdentifier = project.identifier || project.name;
 
-    const workItems = await fetchWorkItems(projectId);
+    const workItems = await getWorkItemsWithCache(projectId);
 
     for (const workItem of workItems) {
       const item = {
@@ -856,17 +905,223 @@ async function fetchCycles(projectId) {
   }
 }
 
+/**
+ * Cached wrapper for fetchWorkItems with request deduplication
+ * @param {string} projectId - Project ID
+ * @returns {Promise<Array>} Work items for the project
+ */
+async function getWorkItemsWithCache(projectId) {
+  const cacheKey = `workItems:${projectId}`;
+  const cacheEntry = workItemsCache.get(projectId);
+  
+  // Return from cache if valid
+  if (cacheEntry && isCacheValid(cacheEntry.timestamp, WORK_ITEMS_CACHE_TTL_MS)) {
+    logger.info(`✓ Using cached work items for project ${projectId}`);
+    return cacheEntry.data;
+  }
+
+  // Deduplicate: if a request is already in progress, wait for it
+  if (pendingRequests.has(cacheKey)) {
+    logger.info(`⏳ Waiting for in-flight work items request for ${projectId}`);
+    return pendingRequests.get(cacheKey);
+  }
+
+  // Create a new request and store the promise
+  const requestPromise = (async () => {
+    try {
+      logger.info(`📡 Fetching fresh work items for project ${projectId}`);
+      const workItems = await fetchWorkItems(projectId);
+      
+      workItemsCache.set(projectId, {
+        data: workItems,
+        timestamp: Date.now(),
+      });
+      
+      return workItems;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Cached wrapper for fetchWorkItemActivities with request deduplication
+ * @param {string} projectId - Project ID
+ * @param {string} workItemId - Work item ID
+ * @returns {Promise<Array>} Activities for the work item
+ */
+async function getActivitiesWithCache(projectId, workItemId) {
+  const cacheKey = `activities:${workItemId}`;
+  const cacheEntry = activitiesCache.get(workItemId);
+  
+  if (cacheEntry && isCacheValid(cacheEntry.timestamp, ACTIVITIES_CACHE_TTL_MS)) {
+    logger.info(`✓ Using cached activities for work item ${workItemId}`);
+    return cacheEntry.data;
+  }
+
+  if (pendingRequests.has(cacheKey)) {
+    logger.info(`⏳ Waiting for in-flight activities request for ${workItemId}`);
+    return pendingRequests.get(cacheKey);
+  }
+
+  const requestPromise = (async () => {
+    try {
+      logger.info(`📡 Fetching fresh activities for work item ${workItemId}`);
+      const activities = await fetchWorkItemActivities(projectId, workItemId);
+      
+      activitiesCache.set(workItemId, {
+        data: activities,
+        timestamp: Date.now(),
+      });
+      
+      return activities;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Cached wrapper for fetchWorkItemComments with request deduplication
+ * @param {string} projectId - Project ID
+ * @param {string} workItemId - Work item ID
+ * @returns {Promise<Array>} Comments for the work item
+ */
+async function getCommentsWithCache(projectId, workItemId) {
+  const cacheKey = `comments:${workItemId}`;
+  const cacheEntry = commentsCache.get(workItemId);
+  
+  if (cacheEntry && isCacheValid(cacheEntry.timestamp, COMMENTS_CACHE_TTL_MS)) {
+    logger.info(`✓ Using cached comments for work item ${workItemId}`);
+    return cacheEntry.data;
+  }
+
+  if (pendingRequests.has(cacheKey)) {
+    logger.info(`⏳ Waiting for in-flight comments request for ${workItemId}`);
+    return pendingRequests.get(cacheKey);
+  }
+
+  const requestPromise = (async () => {
+    try {
+      logger.info(`📡 Fetching fresh comments for work item ${workItemId}`);
+      const comments = await fetchWorkItemComments(projectId, workItemId);
+      
+      commentsCache.set(workItemId, {
+        data: comments,
+        timestamp: Date.now(),
+      });
+      
+      return comments;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Cached wrapper for fetchWorkItemSubitems with request deduplication
+ * @param {string} projectId - Project ID
+ * @param {string} workItemId - Work item ID
+ * @returns {Promise<Array>} Subitems for the work item
+ */
+async function getSubitemsWithCache(projectId, workItemId) {
+  const cacheKey = `subitems:${workItemId}`;
+  const cacheEntry = subitemsCache.get(workItemId);
+  
+  if (cacheEntry && isCacheValid(cacheEntry.timestamp, SUBITEMS_CACHE_TTL_MS)) {
+    logger.info(`✓ Using cached subitems for work item ${workItemId}`);
+    return cacheEntry.data;
+  }
+
+  if (pendingRequests.has(cacheKey)) {
+    logger.info(`⏳ Waiting for in-flight subitems request for ${workItemId}`);
+    return pendingRequests.get(cacheKey);
+  }
+
+  const requestPromise = (async () => {
+    try {
+      logger.info(`📡 Fetching fresh subitems for work item ${workItemId}`);
+      const subitems = await fetchWorkItemSubitems(projectId, workItemId);
+      
+      subitemsCache.set(workItemId, {
+        data: subitems,
+        timestamp: Date.now(),
+      });
+      
+      return subitems;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Cached wrapper for fetchCycles with request deduplication
+ * @param {string} projectId - Project ID
+ * @returns {Promise<Array>} Cycles for the project
+ */
+async function getCyclesWithCache(projectId) {
+  const cacheKey = `cycles:${projectId}`;
+  const cacheEntry = cyclesCache.get(projectId);
+  
+  if (cacheEntry && isCacheValid(cacheEntry.timestamp, CYCLES_CACHE_TTL_MS)) {
+    logger.info(`✓ Using cached cycles for project ${projectId}`);
+    return cacheEntry.data;
+  }
+
+  if (pendingRequests.has(cacheKey)) {
+    logger.info(`⏳ Waiting for in-flight cycles request for ${projectId}`);
+    return pendingRequests.get(cacheKey);
+  }
+
+  const requestPromise = (async () => {
+    try {
+      logger.info(`📡 Fetching fresh cycles for project ${projectId}`);
+      const cycles = await fetchCycles(projectId);
+      
+      cyclesCache.set(projectId, {
+        data: cycles,
+        timestamp: Date.now(),
+      });
+      
+      return cycles;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
 export {
   initPlaneService,
   fetchProjects,
   fetchWorkItems,
+  getWorkItemsWithCache,
   fetchWorkItemActivities,
+  getActivitiesWithCache,
   fetchWorkItemComments,
+  getCommentsWithCache,
   fetchWorkItemSubitems,
+  getSubitemsWithCache,
   getTeamActivities,
   getWorkItemsSnapshot,
   getWorkspaceMembers,
   getWorkspaceDetails,
   getWorkspaceActivities,
   fetchCycles,
+  getCyclesWithCache,
 };
