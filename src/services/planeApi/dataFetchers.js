@@ -29,8 +29,15 @@ import { getResults, getNextCursor } from "./helpers.js";
  */
 export async function fetchProjects() {
   const workspace = getServiceConfig().WORKSPACE_SLUG;
-  if (!workspace || typeof workspace !== 'string' || workspace.trim() === '' || workspace.includes('{')) {
-    logger.error(`Invalid WORKSPACE_SLUG provided to fetchProjects: "${workspace}"`);
+  if (
+    !workspace ||
+    typeof workspace !== "string" ||
+    workspace.trim() === "" ||
+    workspace.includes("{")
+  ) {
+    logger.error(
+      `Invalid WORKSPACE_SLUG provided to fetchProjects: "${workspace}"`
+    );
     return [];
   }
 
@@ -71,7 +78,11 @@ export async function fetchWorkItems(projectId) {
   let hasMore = true;
   let iteration = 0;
 
-  while (hasMore && workItems.length < MAX_WORK_ITEMS_PER_PROJECT && iteration < MAX_ITERATIONS) {
+  while (
+    hasMore &&
+    workItems.length < MAX_WORK_ITEMS_PER_PROJECT &&
+    iteration < MAX_ITERATIONS
+  ) {
     iteration++;
     const params = {
       order_by: "-updated_at",
@@ -273,7 +284,9 @@ export async function fetchCycles(projectId) {
       isCurrent: (() => {
         if (!cycle.start_date || !cycle.end_date) return false;
         const now = new Date();
-        return new Date(cycle.start_date) <= now && now <= new Date(cycle.end_date);
+        return (
+          new Date(cycle.start_date) <= now && now <= new Date(cycle.end_date)
+        );
       })(),
     }));
   } catch (error) {
@@ -306,7 +319,11 @@ export async function getWorkspaceMembers() {
   try {
     const response = await apiRequestWithRetry(
       () =>
-        apiGet(`/workspaces/${workspace}/members/`, { page: 1, per_page: 100 }, "getWorkspaceMembers"),
+        apiGet(
+          `/workspaces/${workspace}/members/`,
+          { page: 1, per_page: 100 },
+          "getWorkspaceMembers"
+        ),
       "getWorkspaceMembers"
     );
 
@@ -333,11 +350,12 @@ export async function fetchUserName(userId) {
     const members = await getWorkspaceMembers();
 
     // Find user by ID
-    const user = members.find((m) =>
-      m.id === userId ||
-      m.member_id === userId ||
-      m.member?.id === userId ||
-      m.user?.id === userId
+    const user = members.find(
+      (m) =>
+        m.id === userId ||
+        m.member_id === userId ||
+        m.member?.id === userId ||
+        m.user?.id === userId
     );
 
     if (user) {
@@ -393,7 +411,11 @@ export async function getWorkspaceActivities(params) {
   try {
     const response = await apiRequestWithRetry(
       () =>
-        apiGet(`/workspaces/${workspace}/activities/`, params, "getWorkspaceActivities"),
+        apiGet(
+          `/workspaces/${workspace}/activities/`,
+          params,
+          "getWorkspaceActivities"
+        ),
       "getWorkspaceActivities"
     );
 
