@@ -152,6 +152,7 @@ router.post('/', async (request, env, ctx) => {
     PLANE_BASE_URL: env.PLANE_BASE_URL || 'https://plane.superalign.ai/api/v1',
     WORKSPACE_SLUG: env.WORKSPACE_SLUG,
   });
+  logger.info('Plane service initialized for request');
 
   if (interaction.type === InteractionType.PING) {
     return Response.json({ type: InteractionResponseType.PONG });
@@ -175,32 +176,62 @@ router.post('/', async (request, env, ctx) => {
     if (!focusedOption) return Response.json({ type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, data: { choices: [] } });
 
     if (name === 'person_daily_summary' && focusedOption.name === 'person') {
-      const people = await getPeople();
-      const filtered = people
-        .filter(p => p.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
-        .slice(0, 25)
-        .map(p => ({ name: p.name, value: p.name }));
+      try {
+        logger.info('Fetching people for person autocomplete');
+        const people = await getPeople();
+        logger.info(`Found ${people.length} people for autocomplete`);
 
-      return Response.json({
-        type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
-        data: { choices: filtered }
-      });
+        const filtered = people
+          .filter(p => p && p.name && p.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
+          .slice(0, 25)
+          .map(p => ({ name: p.name, value: p.name }));
+
+        logger.info(`Returning ${filtered.length} filtered people`);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: filtered }
+        });
+      } catch (error) {
+        logger.error('Error fetching people for person autocomplete:', error);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: [] }
+        });
+      }
     }
 
     if (name === 'person_daily_summary' && focusedOption.name === 'team') {
-      const projects = await fetchProjects();
-      const filtered = projects
-        .filter(p =>
-          p.name.toLowerCase().includes(focusedOption.value.toLowerCase()) ||
-          p.identifier.toLowerCase().includes(focusedOption.value.toLowerCase())
-        )
-        .slice(0, 25)
-        .map(p => ({ name: `${p.name} (${p.identifier})`, value: p.identifier }));
+      try {
+        logger.info('Fetching projects for team autocomplete');
+        const projects = await fetchProjects();
+        logger.info(`Found ${projects.length} projects for autocomplete`);
 
-      return Response.json({
-        type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
-        data: { choices: filtered }
-      });
+        const filtered = projects
+          .filter(p => {
+            const name = p.name || p.identifier || 'Unknown';
+            const identifier = p.identifier || p.name || p.id || 'unknown';
+            return name.toLowerCase().includes(focusedOption.value.toLowerCase()) ||
+                   identifier.toLowerCase().includes(focusedOption.value.toLowerCase());
+          })
+          .slice(0, 25)
+          .map(p => {
+            const name = p.name || p.identifier || 'Unknown';
+            const identifier = p.identifier || p.name || p.id || 'unknown';
+            return { name: `${name} (${identifier})`, value: identifier };
+          });
+
+        logger.info(`Returning ${filtered.length} filtered projects`);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: filtered }
+        });
+      } catch (error) {
+        logger.error('Error fetching projects for team autocomplete:', error);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: [] }
+        });
+      }
     }
   }
 
