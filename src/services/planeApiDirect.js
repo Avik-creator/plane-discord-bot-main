@@ -76,6 +76,24 @@ function sleep(ms) {
 }
 
 /**
+ * Normalize a name for comparison by removing special characters, converting to lowercase
+ * Handles variations like "shruti.dhasmana" vs "Shruti Dhasmana"
+ */
+function normalizeName(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name.toLowerCase().replace(/[.\-_\s]+/g, '');
+}
+
+/**
+ * Check if two names match (handles different formats)
+ * e.g., "shruti.dhasmana" matches "Shruti Dhasmana"
+ */
+function namesMatch(name1, name2) {
+  if (!name1 || !name2) return false;
+  return normalizeName(name1) === normalizeName(name2);
+}
+
+/**
  * Check if cache entry is still valid
  */
 function isCacheValid(timestamp, ttl) {
@@ -592,6 +610,11 @@ async function _getTeamActivitiesInternal(
         continue;
       }
 
+      // Extract assignee names from the work item
+      const assigneeNames = workItem.assignee_details?.map(
+        (a) => a.display_name || a.email || "Unassigned"
+      ) || [];
+
       // Queue activity fetch task
       activityFetchTasks.push({
         projectId,
@@ -601,6 +624,9 @@ async function _getTeamActivitiesInternal(
         projectIdentifier,
         createdAt,
         updatedAt,
+        assignees: assigneeNames,
+        state: workItem.state_detail?.name || workItem.state || "Unknown",
+        priority: workItem.priority || "none",
       });
     }
   }
@@ -631,8 +657,8 @@ async function _getTeamActivitiesInternal(
               // Fetch actor name from user ID
               const actorName = await fetchUserName(activity.actor);
 
-              // Filter by actor if requested
-              if (actorFilter && actorName !== actorFilter) {
+              // Filter by actor if requested (fuzzy name matching)
+              if (actorFilter && !namesMatch(actorName, actorFilter)) {
                 continue;
               }
 
@@ -673,8 +699,8 @@ async function _getTeamActivitiesInternal(
                   comment.actor || comment.created_by
                 );
 
-                // Filter by actor if requested
-                if (actorFilter && commentActor !== actorFilter) {
+                // Filter by actor if requested (fuzzy name matching)
+                if (actorFilter && !namesMatch(commentActor, actorFilter)) {
                   continue;
                 }
 
@@ -709,11 +735,11 @@ async function _getTeamActivitiesInternal(
 
             if (subitems && subitems.length > 0) {
               for (const subitem of subitems) {
-                // Filter by actor (assignee) if requested
+                // Filter by actor (assignee) if requested (fuzzy name matching)
                 if (actorFilter) {
                   const isAssignee = subitem.assignee_details?.some(
                     (a) =>
-                      a.display_name === actorFilter || a.email === actorFilter
+                      namesMatch(a.display_name, actorFilter) || namesMatch(a.email, actorFilter)
                   );
                   if (!isAssignee) continue;
                 }
@@ -761,7 +787,7 @@ async function _getTeamActivitiesInternal(
 
           // If no activities found, add snapshot ONLY if the actor is assigned to this work item
           if (!foundActivityInRange) {
-            const isAssigned = !actorFilter || task.assignees.some(a => a === actorFilter);
+            const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
 
             if (isAssigned) {
               activities.push({
@@ -781,15 +807,21 @@ async function _getTeamActivitiesInternal(
           logger.warn(
             `Error fetching activities for ${task.workItemIdentifier}: ${error.message}`
           );
-          // Add snapshot even on error
-          activities.push({
-            type: "work_item_snapshot",
-            workItem: task.workItemIdentifier,
-            workItemName: task.workItemName,
-            project: task.projectIdentifier,
-            createdAt: task.createdAt.toISOString(),
-            updatedAt: task.updatedAt.toISOString(),
-          });
+          // Add snapshot on error ONLY if the actor is assigned to this work item (fuzzy name matching)
+          const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
+          if (isAssigned) {
+            activities.push({
+              type: "work_item_snapshot",
+              workItem: task.workItemIdentifier,
+              workItemName: task.workItemName,
+              project: task.projectIdentifier,
+              state: task.state || "Unknown",
+              priority: task.priority || "None",
+              assignees: task.assignees || [],
+              createdAt: task.createdAt.toISOString(),
+              updatedAt: task.updatedAt.toISOString(),
+            });
+          }
         }
       })
     )
