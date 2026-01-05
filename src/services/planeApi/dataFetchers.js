@@ -29,45 +29,26 @@ import { getResults, getNextCursor } from "./helpers.js";
  */
 export async function fetchProjects() {
   const workspace = getServiceConfig().WORKSPACE_SLUG;
-  const projects = [];
-  let cursor = null;
-  let hasMore = true;
-  let iteration = 0;
+  if (!workspace || typeof workspace !== 'string' || workspace.trim() === '' || workspace.includes('{')) {
+    logger.error(`Invalid WORKSPACE_SLUG provided to fetchProjects: "${workspace}"`);
+    return [];
+  }
 
-  while (hasMore) {
-    iteration++;
-    if (iteration > MAX_ITERATIONS) {
-      logger.warn(`Too many fetchProjects iterations, breaking`);
-      break;
-    }
-
-    const params = cursor ? { cursor } : {};
-    logger.debug(
-      `Fetching projects ${cursor ? `(cursor: ${cursor})` : `(page ${iteration})`}`
-    );
+  try {
+    logger.debug(`Fetching projects from /workspaces/${workspace}/projects/`);
 
     const response = await apiRequestWithRetry(
-      () => apiGet(`/workspaces/${workspace}/projects/`, params, "fetchProjects"),
+      () => apiGet(`/workspaces/${workspace}/projects/`, {}, "fetchProjects"),
       "fetchProjects"
     );
 
-    const results = getResults(response.data);
-    projects.push(...results);
-    cursor = getNextCursor(response.data);
-    hasMore = !!cursor;
-
-    logger.info(
-      `Projects API response: ${JSON.stringify({
-        resultsCount: results.length,
-        hasCursor: !!cursor,
-      })}`
-    );
+    const projects = getResults(response.data);
+    logger.info(`Fetched ${projects.length} projects total`);
+    return projects;
+  } catch (error) {
+    logger.error(`Failed to fetch projects: ${error.message}`);
+    return [];
   }
-
-  logger.info(
-    `Fetched ${projects.length} projects total after ${iteration} iterations`
-  );
-  return projects;
 }
 
 /**
