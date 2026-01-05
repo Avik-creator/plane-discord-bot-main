@@ -4,14 +4,11 @@
  * Tests connectivity to the Plane API and shows workspace stats.
  * Since we're using direct API calls (no database), this verifies API access.
  */
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const {
-  fetchProjects,
-  getWorkItemsSnapshot,
-} = require("../services/planeApiDirect");
-const logger = require("../utils/logger");
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import { fetchProjects, getWorkItemsSnapshot } from "../services/planeApiDirect.js";
+import logger from "../utils/logger.js";
 
-module.exports = {
+export default {
   data: new SlashCommandBuilder()
     .setName("team_sync")
     .setDescription(

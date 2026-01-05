@@ -4,15 +4,12 @@
  * Generates and displays a weekly summary of ALL team work.
  * Fetches data directly from Plane API - no database required.
  */
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const {
-  getTeamActivities,
-  fetchProjects,
-} = require("../services/planeApiDirect");
-const config = require("../config/config.enhanced");
-const { generateText } = require("ai");
-const { google } = require("@ai-sdk/google");
-const logger = require("../utils/logger");
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import { getTeamActivities, fetchProjects } from "../services/planeApiDirect.js";
+import config from "../config/config.enhanced.js";
+import { generateText } from "ai";
+import { google } from "@ai-sdk/google";
+import logger from "../utils/logger.js";
 
 const SYSTEM_PROMPT = `You are a team work summary formatter. Your ONLY job is to convert structured team work activities and work items into readable sentences.
 
@@ -56,7 +53,7 @@ Show team activity aggregated by work item and contributor. Include comment cont
 Show team activity aggregated by day first, then by work item and contributor.
 Highlight completed items and any blocking issues.`;
 
-module.exports = {
+export default {
   data: new SlashCommandBuilder()
     .setName("team_weekly_summary")
     .setDescription("Get this week's team work summary (Admin only)")

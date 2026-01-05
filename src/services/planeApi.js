@@ -1,7 +1,7 @@
-const axios = require("axios");
-const config = require("../config/config");
-const FormData = require("form-data");
-const logger = require("../utils/logger");
+import axios from "axios";
+import config from "../config/config.js";
+import FormData from "form-data";
+import logger from "../utils/logger.js";
 
 // Maximum file size (10MB)
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -634,4 +634,4 @@ class PlaneService {
   }
 }
 
-module.exports = new PlaneService();
+export default new PlaneService();

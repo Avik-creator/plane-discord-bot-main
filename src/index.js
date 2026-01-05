@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "./config/config.enhanced.js";
+import { initPlaneService } from "./services/planeApiDirect.js";
 import logger from "./utils/logger.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -21,6 +22,10 @@ logger.info("Starting Discord bot (Gateway mode)...", {
   node_version: process.version,
   platform: process.platform,
 });
+
+// Initialize Plane API service
+initPlaneService(config);
+logger.info("Plane API service initialized for Discord bot");
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 

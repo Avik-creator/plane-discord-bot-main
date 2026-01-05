@@ -1,4 +1,4 @@
-const getPriorityColor = (priority) => {
+export const getPriorityColor = (priority) => {
   const colors = {
     urgent: 0xdc2626, // Bright Red
     high: 0xea580c, // Bright Orange
@@ -8,7 +8,7 @@ const getPriorityColor = (priority) => {
   return colors[priority?.toLowerCase()] || 0x6b7280; // Default gray
 };
 
-const getPriorityEmoji = (priority) => {
+export const getPriorityEmoji = (priority) => {
   const emojis = {
     urgent: "🔴",
     high: "🟠",
@@ -19,7 +19,7 @@ const getPriorityEmoji = (priority) => {
   return emojis[priority?.toLowerCase()] || emojis.none;
 };
 
-const getStateEmoji = (group) => {
+export const getStateEmoji = (group) => {
   const emojis = {
     backlog: "📋",
     unstarted: "⭕",
@@ -31,7 +31,7 @@ const getStateEmoji = (group) => {
   return emojis[group?.toLowerCase()] || "❔";
 };
 
-const formatState = (state, group) => {
+export const formatState = (state, group) => {
   if (!state) return "Unknown";
   const emoji = getStateEmoji(group);
   const formattedState =
@@ -39,7 +39,7 @@ const formatState = (state, group) => {
   return `${emoji} ${formattedState}`;
 };
 
-const getIssueColor = (issue) => {
+export const getIssueColor = (issue) => {
   // First try to use state color
   if (issue.state_detail?.color) {
     return parseInt(issue.state_detail.color.replace("#", ""), 16);
@@ -48,21 +48,21 @@ const getIssueColor = (issue) => {
   return getPriorityColor(issue.priority);
 };
 
-const formatDate = (dateString) => {
+export const formatDate = (dateString) => {
   return new Date(dateString).toLocaleString();
 };
 
-const formatDescription = (description) => {
+export const formatDescription = (description) => {
   if (!description) return "";
   const trimmed = description.trim();
   return trimmed ? `>>> ${trimmed}` : "";
 };
 
-const getIssueUrl = (workspaceSlug, projectId, issueId) => {
+export const getIssueUrl = (workspaceSlug, projectId, issueId) => {
   return `https://app.plane.so/${workspaceSlug}/projects/${projectId}/issues/${issueId}`;
 };
 
-const formatLabels = (labels) => {
+export const formatLabels = (labels) => {
   if (!labels || labels.length === 0) return [];
 
   return labels.map((label) => {
@@ -76,16 +76,4 @@ const formatLabels = (labels) => {
       color: colorInt,
     };
   });
-};
-
-module.exports = {
-  getPriorityColor,
-  getPriorityEmoji,
-  getStateEmoji,
-  formatState,
-  getIssueColor,
-  formatDate,
-  formatDescription,
-  getIssueUrl,
-  formatLabels,
 };

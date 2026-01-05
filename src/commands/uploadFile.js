@@ -1,10 +1,10 @@
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const planeService = require("../services/planeApi");
-const logger = require("../utils/logger");
-const { getIssueUrl } = require("../utils/utils");
-const axios = require("axios");
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import planeService from "../services/planeApi.js";
+import logger from "../utils/logger.js";
+import { getIssueUrl } from "../utils/utils.js";
+import axios from "axios";
 
-module.exports = {
+export default {
     data: new SlashCommandBuilder()
         .setName("upload-file")
         .setDescription("Upload a file to an issue")

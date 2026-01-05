@@ -1,7 +1,7 @@
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const planeService = require("../services/planeApi");
-const logger = require("../utils/logger");
-const {
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import planeService from "../services/planeApi.js";
+import logger from "../utils/logger.js";
+import {
   getPriorityEmoji,
   formatState,
   getIssueColor,
@@ -9,7 +9,7 @@ const {
   formatDescription,
   getIssueUrl,
   formatLabels,
-} = require("../utils/utils");
+} from "../utils/utils.js";
 
 const formatAttachments = (attachments) => {
   if (!attachments || attachments.length === 0) return { text: "No attachments" };
@@ -63,7 +63,7 @@ const formatMetadata = (issue) => {
   return parts.join(" • ");
 };
 
-module.exports = {
+export default {
   data: new SlashCommandBuilder()
     .setName("view-issue")
     .setDescription("View details of a specific issue")

@@ -1,14 +1,14 @@
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const planeService = require("../services/planeApi");
-const logger = require("../utils/logger");
-const {
+import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import planeService from "../services/planeApi.js";
+import logger from "../utils/logger.js";
+import {
   getPriorityEmoji,
   formatState,
   formatDate,
   getIssueUrl
-} = require("../utils/utils");
+} from "../utils/utils.js";
 
-module.exports = {
+export default {
   data: new SlashCommandBuilder()
     .setName("get-issues")
     .setDescription("Get a list of issues")
