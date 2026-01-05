@@ -12,35 +12,35 @@ const { generateText } = require("ai");
 const { google } = require("@ai-sdk/google");
 const logger = require("../utils/logger");
 
-const SYSTEM_PROMPT = `You are a team work summary formatter. Your ONLY job is to convert structured team work activities and work items into readable sentences.
+const SYSTEM_PROMPT = `You are a team work summary formatter. Your ONLY job is to convert structured team work activities into readable text using a specific format.
 
 STRICT RULES:
 1. ONLY describe activities that are explicitly provided
 2. DO NOT infer intent, mood, or additional context
 3. DO NOT add encouragement, opinions, or commentary
 4. Use clear, professional language
-5. Group related activities together (e.g., all changes to one work item)
-6. Use bullet points for clarity
-7. Include work item identifiers when referencing work items
-8. Show individual contributors where activities relate to them
-9. Aggregate similar activities across the team
-
-ACTIVITY TYPES:
-- "activity": Changes made to a work item (status, priority, etc)
-- "comment": Discussion/comments on a work item from team members
-- "subitem": Sub-issues/child work items with their progress
-- "work_item_snapshot": Work items created or updated in the period (shown with current state)
 
 OUTPUT FORMAT:
-- Start with a high-level summary (e.g., "The team had 15 activities today across 5 work items")
-- Group by work item, showing the work item identifier and name
-- Under each work item, list the activities with contributor information
-- For subitems, show progress information (e.g., "3 of 5 tasks completed - 60%")
-- Show assignees for subitems
-- Include sections for: Work Items Created/Updated, Status Changes, Subitem Progress, Comments/Discussions, Other Updates
-- For work_item_snapshot items, show: state, priority, assignees, description
-- Include actual comment text for user discussions
-- End with key metrics
+For each project the team worked on, output:
+Project Name
+Cycle Name - Cycle Status -> %completed
+
+<Person Name>
+<Tasks/SubTasks Done>
+<Tasks/SubTasks in Progress>
+
+- Group activities by project first
+- Replace "Project Name" with the actual project name
+- Replace "Cycle Name" with the actual cycle name
+- Replace "%completed" with the cycle completion percentage (calculate as: completedIssues/totalIssues * 100, round to nearest integer)
+- If no cycles exist for the project, use "No active cycles"
+- For each person who worked on the project, show their section with:
+  - <Person Name> (replace with actual person name)
+  - Tasks/SubTasks Done: List all completed work items and subtasks for that person (bullet points, include ID and name)
+  - Tasks/SubTasks in Progress: List all in-progress work items and subtasks for that person (bullet points, include ID, name, and state)
+- Separate each person's section with a blank line
+- Separate each project with a blank line
+- Only include people who have activity in that project
 
 If no activities are provided, respond with: "No team activity found for this period."`;
 
@@ -145,8 +145,7 @@ module.exports = {
       const dateKey = targetDate.toISOString().split("T")[0];
 
       logger.info(
-        `Fetching team activities for ${dateKey}${
-          projectFilter ? ` (project: ${projectFilter})` : ""
+        `Fetching team activities for ${dateKey}${projectFilter ? ` (project: ${projectFilter})` : ""
         }`
       );
 
