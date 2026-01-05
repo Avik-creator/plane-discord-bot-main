@@ -5,7 +5,10 @@
  * Fetches data directly from Plane API - no database required.
  */
 import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
-import { getTeamActivities, fetchProjects } from "../services/planeApiDirect.js";
+import {
+  getTeamActivities,
+  fetchProjects,
+} from "../services/planeApiDirect.js";
 import config from "../config/config.enhanced.js";
 import { generateText } from "ai";
 import { google } from "@ai-sdk/google";
@@ -144,7 +147,8 @@ export default {
       const dateKey = targetDate.toISOString().split("T")[0];
 
       logger.info(
-        `Fetching team activities for ${dateKey}${projectFilter ? ` (project: ${projectFilter})` : ""
+        `Fetching team activities for ${dateKey}${
+          projectFilter ? ` (project: ${projectFilter})` : ""
         }`
       );
 

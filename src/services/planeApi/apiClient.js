@@ -31,7 +31,9 @@ function initPlaneService(config) {
  */
 function ensureApi() {
   if (!PLANE_API) {
-    throw new Error("Plane API service not initialized. Call initPlaneService(config) first.");
+    throw new Error(
+      "Plane API service not initialized. Call initPlaneService(config) first."
+    );
   }
 }
 

@@ -133,7 +133,7 @@ export function clearActivityCaches() {
   activitiesCache.clear();
   commentsCache.clear();
   subitemsCache.clear();
-  logger.debug('Cleared activity caches for fresh data fetch');
+  logger.debug("Cleared activity caches for fresh data fetch");
 }
 
 /**
@@ -147,5 +147,5 @@ export function clearAllCaches() {
   commentsCache.clear();
   subitemsCache.clear();
   cyclesCache.clear();
-  logger.info('All caches cleared');
+  logger.info("All caches cleared");
 }

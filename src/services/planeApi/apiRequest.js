@@ -32,7 +32,9 @@ export async function apiRequestWithRetry(requestFn, context = "") {
           : INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
 
         logger.warn(
-          `[429 Rate Limited] ${context}, retry ${attempt + 1}/${MAX_RETRIES} in ${delayMs}ms | Headers: ${JSON.stringify(
+          `[429 Rate Limited] ${context}, retry ${
+            attempt + 1
+          }/${MAX_RETRIES} in ${delayMs}ms | Headers: ${JSON.stringify(
             error.response.headers
           )}`
         );
@@ -40,7 +42,9 @@ export async function apiRequestWithRetry(requestFn, context = "") {
       } else {
         // Non-429 errors: fail immediately, don't retry
         logger.error(
-          `[${error.response?.status || "Network"}] ${context}: ${error.message}`
+          `[${error.response?.status || "Network"}] ${context}: ${
+            error.message
+          }`
         );
         throw error;
       }
@@ -59,10 +63,7 @@ export async function apiRequestWithRetry(requestFn, context = "") {
  */
 export async function apiGet(endpoint, params = {}, context = "") {
   const api = getApiClient();
-  return apiRequestWithRetry(
-    () => api.get(endpoint, { params }),
-    context
-  );
+  return apiRequestWithRetry(() => api.get(endpoint, { params }), context);
 }
 
 /**

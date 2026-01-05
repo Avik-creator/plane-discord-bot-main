@@ -20,8 +20,8 @@ export function sleep(ms) {
  * @returns {string} Normalized name
  */
 export function normalizeName(name) {
-  if (!name || typeof name !== 'string') return '';
-  return name.toLowerCase().replace(/[.\-_\s]+/g, '');
+  if (!name || typeof name !== "string") return "";
+  return name.toLowerCase().replace(/[.\-_\s]+/g, "");
 }
 
 /**
@@ -93,9 +93,11 @@ export function getWorkItemPriority(workItem) {
  * @returns {Array<string>} Array of assignee names
  */
 export function getAssigneeNames(workItem) {
-  return workItem.assignee_details?.map(
-    (a) => a.display_name || a.email || "Unassigned"
-  ) || [];
+  return (
+    workItem.assignee_details?.map(
+      (a) => a.display_name || a.email || "Unassigned"
+    ) || []
+  );
 }
 
 /**
@@ -105,13 +107,21 @@ export function getAssigneeNames(workItem) {
  */
 export function classifyWorkItemState(state) {
   if (!state) return "backlog";
-  
+
   const stateLower = state.toLowerCase();
-  if (stateLower.includes("done") || stateLower.includes("complete") || stateLower.includes("closed")) {
+  if (
+    stateLower.includes("done") ||
+    stateLower.includes("complete") ||
+    stateLower.includes("closed")
+  ) {
     return "completed";
   } else if (stateLower.includes("block")) {
     return "blocked";
-  } else if (stateLower.includes("progress") || stateLower.includes("review") || stateLower.includes("active")) {
+  } else if (
+    stateLower.includes("progress") ||
+    stateLower.includes("review") ||
+    stateLower.includes("active")
+  ) {
     return "inProgress";
   }
   return "backlog";

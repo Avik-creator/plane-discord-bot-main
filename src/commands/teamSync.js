@@ -5,7 +5,10 @@
  * Since we're using direct API calls (no database), this verifies API access.
  */
 import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
-import { fetchProjects, getWorkItemsSnapshot } from "../services/planeApiDirect.js";
+import {
+  fetchProjects,
+  getWorkItemsSnapshot,
+} from "../services/planeApiDirect.js";
 import logger from "../utils/logger.js";
 
 export default {

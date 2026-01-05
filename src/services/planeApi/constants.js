@@ -16,11 +16,11 @@ export const MAX_ITERATIONS = 10;
 
 // Cache TTL settings (in milliseconds)
 export const CACHE_TTL = {
-  PROJECTS: 5 * 60 * 1000,        // 5 minutes
-  USERS: 30 * 60 * 1000,          // 30 minutes
-  WORK_ITEMS: 5 * 60 * 1000,      // 5 minutes
-  ACTIVITIES: 5 * 60 * 1000,      // 5 minutes
-  COMMENTS: 5 * 60 * 1000,        // 5 minutes
-  SUBITEMS: 5 * 60 * 1000,        // 5 minutes
-  CYCLES: 10 * 60 * 1000,         // 10 minutes
+  PROJECTS: 5 * 60 * 1000, // 5 minutes
+  USERS: 30 * 60 * 1000, // 30 minutes
+  WORK_ITEMS: 5 * 60 * 1000, // 5 minutes
+  ACTIVITIES: 5 * 60 * 1000, // 5 minutes
+  COMMENTS: 5 * 60 * 1000, // 5 minutes
+  SUBITEMS: 5 * 60 * 1000, // 5 minutes
+  CYCLES: 10 * 60 * 1000, // 10 minutes
 };

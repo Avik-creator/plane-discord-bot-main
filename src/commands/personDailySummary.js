@@ -8,7 +8,7 @@ import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
 import {
   getPersonDailySummary,
   generatePersonDailySummaryText,
-  getPeople
+  getPeople,
 } from "../services/personDailySummary.js";
 import { fetchProjects } from "../services/planeApiDirect.js";
 import logger from "../utils/logger.js";
@@ -44,7 +44,9 @@ export default {
     if (focusedOption.name === "person") {
       try {
         const people = await getPeople();
-        logger.debug(`Autocomplete: Processing ${people.length} people for "${focusedOption.value}"`);
+        logger.debug(
+          `Autocomplete: Processing ${people.length} people for "${focusedOption.value}"`
+        );
 
         const choices = people.map((p) => ({
           name: p.name,
@@ -55,7 +57,9 @@ export default {
           choice.name.toLowerCase().includes(focusedOption.value.toLowerCase())
         );
 
-        logger.debug(`Autocomplete: Found ${filtered.length} matches for "${focusedOption.value}"`);
+        logger.debug(
+          `Autocomplete: Found ${filtered.length} matches for "${focusedOption.value}"`
+        );
         await interaction.respond(filtered.slice(0, 25));
       } catch (error) {
         logger.error("Error fetching people for autocomplete:", error);
@@ -100,7 +104,8 @@ export default {
         targetDate = new Date(dateInput);
         if (isNaN(targetDate.getTime())) {
           return interaction.editReply({
-            content: "❌ **Invalid date format**\n\nPlease use YYYY-MM-DD format (e.g., 2025-12-30).",
+            content:
+              "❌ **Invalid date format**\n\nPlease use YYYY-MM-DD format (e.g., 2025-12-30).",
           });
         }
       }
@@ -119,7 +124,9 @@ export default {
         const embed = new EmbedBuilder()
           .setColor(0x99aab5)
           .setTitle(`📊 Daily Summary: ${personName}`)
-          .setDescription(`No activity recorded for **${personName}** on **${dateKey}**.`)
+          .setDescription(
+            `No activity recorded for **${personName}** on **${dateKey}**.`
+          )
           .setTimestamp();
 
         return interaction.editReply({ embeds: [embed] });
@@ -149,7 +156,9 @@ export default {
         const embed = new EmbedBuilder()
           .setColor(0x5865f2)
           .setTimestamp()
-          .setFooter({ text: `Team: ${summary.team} • Page ${embeds.length + 1}` });
+          .setFooter({
+            text: `Team: ${summary.team} • Page ${embeds.length + 1}`,
+          });
 
         if (embeds.length === 0) {
           embed.setTitle(title).setDescription(chunk);
@@ -165,7 +174,8 @@ export default {
     } catch (error) {
       logger.error("Error generating person daily summary:", error);
       return interaction.editReply({
-        content: "❌ **Error generating summary**\n\nAn error occurred while generating the summary. Please try again later.",
+        content:
+          "❌ **Error generating summary**\n\nAn error occurred while generating the summary. Please try again later.",
       });
     }
   },

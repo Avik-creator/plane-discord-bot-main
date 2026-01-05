@@ -77,9 +77,9 @@ function transformSubitem(subitem, task, projectIdentifier) {
     workItemName: subitem.name,
     state: subitem.state_detail?.name || subitem.state || "Unknown",
     priority: subitem.priority || "none",
-    assignees:
-      subitem.assignee_details?.map((a) => a.display_name || a.email || "Unassigned") ||
-      ["Unassigned"],
+    assignees: subitem.assignee_details?.map(
+      (a) => a.display_name || a.email || "Unassigned"
+    ) || ["Unassigned"],
     progress: {
       completedIssues: subitemProgress.completed_issues || 0,
       totalIssues: subitemProgress.total_issues || 0,
@@ -130,7 +130,12 @@ function isAssignedToActor(assignees, actorFilter) {
  * Prepare work items for activity collection
  * @private
  */
-function prepareWorkItemTasks(workItems, projectIdentifier, startDate, endDate) {
+function prepareWorkItemTasks(
+  workItems,
+  projectIdentifier,
+  startDate,
+  endDate
+) {
   return workItems
     .map((workItem) => {
       const createdAt = new Date(workItem.created_at);
@@ -151,9 +156,10 @@ function prepareWorkItemTasks(workItems, projectIdentifier, startDate, endDate) 
         projectIdentifier,
         createdAt,
         updatedAt,
-        assignees: workItem.assignee_details?.map(
-          (a) => a.display_name || a.email || "Unassigned"
-        ) || [],
+        assignees:
+          workItem.assignee_details?.map(
+            (a) => a.display_name || a.email || "Unassigned"
+          ) || [],
         state: workItem.state_detail?.name || workItem.state || "Unknown",
         priority: workItem.priority || "none",
       };
@@ -176,7 +182,10 @@ async function collectWorkItemActivities(
   let foundActivityInRange = false;
 
   // Process activities
-  const itemActivities = await getActivitiesWithCache(task.projectId, task.workItemId);
+  const itemActivities = await getActivitiesWithCache(
+    task.projectId,
+    task.workItemId
+  );
   for (const activity of itemActivities) {
     const activityDate = new Date(activity.created_at || activity.updated_at);
     if (!isDateInRange(activityDate, startDate, endDate)) continue;
@@ -207,7 +216,10 @@ async function collectWorkItemComments(
   let foundActivityInRange = false;
 
   try {
-    const comments = await getCommentsWithCache(task.projectId, task.workItemId);
+    const comments = await getCommentsWithCache(
+      task.projectId,
+      task.workItemId
+    );
 
     for (const comment of comments) {
       const commentDate = new Date(comment.created_at);
@@ -234,17 +246,21 @@ async function collectWorkItemComments(
  */
 async function collectWorkItemSubitems(task, activities, actorFilter) {
   try {
-    const subitems = await getSubitemsWithCache(task.projectId, task.workItemId);
+    const subitems = await getSubitemsWithCache(
+      task.projectId,
+      task.workItemId
+    );
 
     if (subitems && subitems.length > 0) {
       for (const subitem of subitems) {
-        const subitemAssignees = subitem.assignee_details?.map(
-          (a) => a.display_name || a.email
-        ) || [];
-        
+        const subitemAssignees =
+          subitem.assignee_details?.map((a) => a.display_name || a.email) || [];
+
         if (!isAssignedToActor(subitemAssignees, actorFilter)) continue;
 
-        activities.push(transformSubitem(subitem, task, task.projectIdentifier));
+        activities.push(
+          transformSubitem(subitem, task, task.projectIdentifier)
+        );
       }
     }
   } catch (error) {
@@ -330,7 +346,12 @@ export async function getTeamActivities(
       continue;
     }
 
-    const tasks = prepareWorkItemTasks(workItems, projectIdentifier, startDate, endDate);
+    const tasks = prepareWorkItemTasks(
+      workItems,
+      projectIdentifier,
+      startDate,
+      endDate
+    );
     activityFetchTasks.push(...tasks);
   }
 
@@ -422,7 +443,8 @@ export async function getWorkItemsSnapshot() {
         state: workItem.state_detail?.name || workItem.state || "Unknown",
         priority: workItem.priority || "none",
         assignees:
-          workItem.assignee_details?.map((a) => a.display_name || a.email) || [],
+          workItem.assignee_details?.map((a) => a.display_name || a.email) ||
+          [],
         createdAt: workItem.created_at,
         updatedAt: workItem.updated_at,
       };
