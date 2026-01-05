@@ -311,7 +311,7 @@ OUTPUT FORMAT (for each project):
 CYCLE FORMAT:
 - If cycles array has items: display each cycle as "Cycle Name -> X% completed" on separate lines
 - Example: Week 16 -> 43% completed
-- If cycles array is empty: display nothing for cycles
+- If cycles array is empty: display "No cycles recorded / Found for this project."
 
 INSTRUCTIONS:
 1. For each project in the data, create a new section
