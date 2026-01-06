@@ -348,19 +348,55 @@ async function processTeamDailySummary(interaction, env) {
       })
       .join("\n\n");
 
-    const systemPrompt = `You are a team work summary formatter. Format the team data into a readable summary.
-Format: 
-**PROJECT_NAME**
-CYCLE_INFO
+    const systemPrompt = `You are a team work summary formatter. Your ONLY job is to convert structured team work data into readable text using a SPECIFIC format.
 
-**MEMBER_NAME**
+STRICT RULES:
+1. ONLY describe activities that are explicitly provided in the data
+2. DO NOT infer intent, mood, or additional context
+3. DO NOT add encouragement, opinions, or commentary
+4. Use clear, professional language
+5. Follow the EXACT output format below
+
+OUTPUT FORMAT:
+
+**PROJECT_NAME**
+CYCLE_NAME -> X% completed
+
+**TEAM_MEMBER_A**
+
+**Tasks/SubTasks Done:**
+• TASK-ID: Task Name
+[or "None" if no completed items]
+
+**Tasks/SubTasks in Progress:**
+• TASK-ID: Task Name (State)
+[or "None" if no in-progress items]
+
+**TEAM_MEMBER_B**
+
 **Tasks/SubTasks Done:**
 • TASK-ID: Task Name
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
 
-Keep it concise. Use the exact data provided.`;
+[Continue for all team members...]
+
+---
+
+FORMATTING RULES:
+- Project name should be in bold
+- Cycle info on its own line with arrow and percentage
+- Each team member name should be in bold
+- Use bullet points (•) for task lists
+- Include task ID and name for each item
+- For in-progress items, include the state in parentheses
+- If a member has no completed tasks, show "None" under Done
+- If a member has no in-progress tasks, show "None" under In Progress
+- Separate team members with blank lines
+- Only include team members who have activity for the date
+
+If no team members have activities, respond with: "No team activity found for this period."`;
 
     const userPrompt = `Format this team daily summary for ${dateKey}:
 PROJECT: ${projectName}
