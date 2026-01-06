@@ -282,6 +282,11 @@ async function processTeamDailySummary(interaction, env) {
           const workItemId = activity.workItem;
           const workItemName = activity.workItemName;
 
+          if (activity.field === "assignees" || activity.field === "assignee") {
+            logger.debug(`Skipping assignment-only activity for ${workItemId}`);
+            continue;
+          }
+
           if (activity.type === "activity" || activity.type === "work_item_snapshot") {
             const state = activity.newValue || activity.state || "Unknown";
             const activityTime = new Date(activity.time || activity.updatedAt);
