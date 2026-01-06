@@ -234,6 +234,32 @@ async function getWorkspaceMembers() {
 }
 
 /**
+ * Fetch members assigned to a specific project
+ * @param {string} projectId - Project ID
+ * @returns {Promise<Array>} List of project members
+ */
+async function getProjectMembers(projectId) {
+  ensureApi();
+  try {
+    const response = await apiRequestWithRetry(
+      () =>
+        PLANE_API.get(
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/members/`,
+          { params: { page: 1, per_page: 100 } }
+        ),
+      `getProjectMembers(${projectId})`
+    );
+
+    return response.data.results || response.data || [];
+  } catch (error) {
+    logger.error(
+      `Failed to fetch members for project ${projectId}: ${error.message}`
+    );
+    return [];
+  }
+}
+
+/**
  * Fetch workspace details
  */
 async function getWorkspaceDetails() {
@@ -1165,6 +1191,7 @@ export {
   getTeamActivities,
   getWorkItemsSnapshot,
   getWorkspaceMembers,
+  getProjectMembers,
   getWorkspaceDetails,
   getWorkspaceActivities,
   fetchCycles,

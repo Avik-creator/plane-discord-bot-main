@@ -12,6 +12,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "./config/config.enhanced.js";
 import logger from "./utils/logger.js";
+import { initPlaneService } from "./services/planeApiDirect.js";
+
+// Initialize Plane service before starting the bot
+initPlaneService(config);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

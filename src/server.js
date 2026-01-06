@@ -5,7 +5,9 @@ import {
   verifyKey,
 } from 'discord-interactions';
 import { getPeople, getPersonDailySummary, generatePersonDailySummaryText } from './services/personDailySummary.js';
-import { initPlaneService, fetchProjects, getWorkspaceMembers, clearActivityCaches } from './services/planeApiDirect.js';
+import { initPlaneService, fetchProjects, getWorkspaceMembers, getProjectMembers, getTeamActivities, getCyclesWithCache, clearActivityCaches } from './services/planeApiDirect.js';
+import { generateText } from 'ai';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import logger from './utils/logger.js';
 
 const router = Router();
@@ -125,6 +127,294 @@ async function processPersonDailySummary(interaction, env) {
 }
 
 /**
+ * State detection patterns (case-insensitive)
+ */
+const STATE_PATTERNS = {
+  completed: ["done", "closed", "complete", "completed"],
+  blocked: ["block", "blocked", "blocking"],
+  inProgress: ["progress", "in progress", "review", "active", "working"],
+};
+
+function matchesStateCategory(state, category) {
+  if (!state || typeof state !== "string") return false;
+  const stateLower = state.toLowerCase();
+  const patterns = STATE_PATTERNS[category] || [];
+  return patterns.some((pattern) => stateLower.includes(pattern));
+}
+
+/**
+ * Process Team Daily Summary Command
+ */
+async function processTeamDailySummary(interaction, env) {
+  const { application_id, token } = interaction;
+  const app_id = application_id || interaction.application_id;
+  const interaction_token = token || interaction.token;
+
+  const interactionData = interaction.data || {};
+  const commandOptions = interactionData.options || [];
+
+  const projectFilter = commandOptions.find(o => o.name === 'project')?.value;
+  const dateInput = commandOptions.find(o => o.name === 'date')?.value;
+
+  try {
+    // Parse date
+    let targetDate = new Date();
+    if (dateInput) {
+      targetDate = new Date(dateInput);
+      if (isNaN(targetDate.getTime())) {
+        await sendFollowUp(app_id, interaction_token, {
+          content: "❌ **Invalid date format**\n\nPlease use YYYY-MM-DD format."
+        });
+        return;
+      }
+    }
+
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    const dateKey = targetDate.toISOString().split("T")[0];
+
+    logger.info(`Processing team summary for project ${projectFilter} on ${dateKey}`);
+
+    // Get project info
+    const projects = await fetchProjects();
+    const selectedProject = projects.find(
+      (p) =>
+        p.name.toLowerCase() === projectFilter.toLowerCase() ||
+        p.identifier.toLowerCase() === projectFilter.toLowerCase()
+    );
+
+    if (!selectedProject) {
+      await sendFollowUp(app_id, interaction_token, {
+        content: `❌ **Project not found**: ${projectFilter}`
+      });
+      return;
+    }
+
+    const projectId = selectedProject.id;
+    const projectName = selectedProject.name;
+
+    // Get project members
+    const members = await getProjectMembers(projectId);
+    logger.info(`Found ${members.length} members in project ${projectName}`);
+
+    // Get cycle info
+    const cycles = await getCyclesWithCache(projectId);
+    logger.info(`Found ${cycles.length} total cycles for project`);
+    
+    const [year, month, day] = dateKey.split('-').map(Number);
+    const queryDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+
+    // Find active cycles (both current and cycles that contain the date)
+    const relevantCycles = cycles.filter((c) => {
+      if (!c.startDate || !c.endDate) {
+        logger.debug(`Cycle ${c.name} has no dates, skipping`);
+        return false;
+      }
+      const cycleStart = new Date(c.startDate);
+      const cycleEnd = new Date(c.endDate);
+      
+      // Compare just the dates (ignore time)
+      const cycleStartDate = new Date(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth(), cycleStart.getUTCDate());
+      const cycleEndDate = new Date(cycleEnd.getUTCFullYear(), cycleEnd.getUTCMonth(), cycleEnd.getUTCDate());
+      const queryDateLocal = new Date(queryDate.getUTCFullYear(), queryDate.getUTCMonth(), queryDate.getUTCDate());
+      
+      const isInRange = queryDateLocal >= cycleStartDate && queryDateLocal <= cycleEndDate;
+      logger.info(`Cycle "${c.name}": ${c.startDate} to ${c.endDate}, query date ${dateKey}, in range: ${isInRange}`);
+      return isInRange;
+    });
+
+    let cycleInfo = "No active cycles";
+    if (relevantCycles.length > 0) {
+      cycleInfo = relevantCycles
+        .map((c) => {
+          const totalIssues = c.totalIssues || 0;
+          const completedIssues = c.completedIssues || 0;
+          const percentage = totalIssues > 0 ? Math.round((completedIssues / totalIssues) * 100) : 0;
+          return `${c.name} -> ${percentage}% completed`;
+        })
+        .join("\n");
+    }
+
+    logger.info(`Cycle info: ${cycleInfo}`);
+
+    // Clear caches for fresh data
+    clearActivityCaches();
+
+    // Get activities for each team member
+    const teamMemberData = [];
+    for (const member of members) {
+      const userData = member.member || member.user || member;
+      const memberName =
+        member.display_name ||
+        userData.display_name ||
+        userData.first_name ||
+        userData.email ||
+        "Unknown";
+
+      if (memberName === "Unknown") continue;
+
+      try {
+        const personActivities = await getTeamActivities(
+          startOfDay,
+          endOfDay,
+          projectFilter,
+          memberName
+        );
+
+        // Continue processing even if no activities for this date
+        logger.info(`Member ${memberName}: ${personActivities.length} activities on ${dateKey}`);
+
+        const completed = [];
+        const inProgress = [];
+        const workItemStates = new Map();
+
+        for (const activity of personActivities) {
+          const workItemId = activity.workItem;
+          const workItemName = activity.workItemName;
+
+          if (activity.type === "activity" || activity.type === "work_item_snapshot") {
+            const state = activity.newValue || activity.state || "Unknown";
+            const activityTime = new Date(activity.time || activity.updatedAt);
+            const existing = workItemStates.get(workItemId);
+
+            if (!existing || activityTime > new Date(existing.time)) {
+              workItemStates.set(workItemId, {
+                id: workItemId,
+                name: workItemName,
+                state: state,
+                time: activity.time || activity.updatedAt,
+              });
+            }
+          } else if (activity.type === "subitem") {
+            const subState = activity.state || "Unknown";
+            if (matchesStateCategory(subState, "completed")) {
+              if (!completed.find((c) => c.id === workItemId)) {
+                completed.push({ id: workItemId, name: workItemName });
+              }
+            } else {
+              if (!inProgress.find((c) => c.id === workItemId)) {
+                inProgress.push({ id: workItemId, name: workItemName, state: subState });
+              }
+            }
+          }
+        }
+
+        for (const [, workItem] of workItemStates) {
+          if (matchesStateCategory(workItem.state, "completed")) {
+            if (!completed.find((c) => c.id === workItem.id)) {
+              completed.push({ id: workItem.id, name: workItem.name });
+            }
+          } else {
+            if (!inProgress.find((c) => c.id === workItem.id)) {
+              inProgress.push({
+                id: workItem.id,
+                name: workItem.name,
+                state: workItem.state,
+              });
+            }
+          }
+        }
+
+        teamMemberData.push({ name: memberName, completed, inProgress });
+      } catch (error) {
+        logger.warn(`Error fetching activities for ${memberName}: ${error.message}`);
+      }
+    }
+
+    if (teamMemberData.length === 0) {
+      await sendFollowUp(app_id, interaction_token, {
+        embeds: [{
+          color: 0x99aab5,
+          title: `📊 Team Daily Summary for ${projectName} (${dateKey})`,
+          description: "No team activity found for this period.",
+          footer: { text: "0 team members with activity" }
+        }]
+      });
+      return;
+    }
+
+    // Format and send summary using AI
+    const formattedTeamData = teamMemberData
+      .map((member) => {
+        const completedText = member.completed.length > 0
+          ? member.completed.map((t) => `  • ${t.id}: ${t.name}`).join("\n")
+          : "  None";
+        const inProgressText = member.inProgress.length > 0
+          ? member.inProgress.map((t) => `  • ${t.id}: ${t.name} (${t.state})`).join("\n")
+          : "  None";
+        return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}`;
+      })
+      .join("\n\n");
+
+    const systemPrompt = `You are a team work summary formatter. Format the team data into a readable summary.
+Format: 
+**PROJECT_NAME**
+CYCLE_INFO
+
+**MEMBER_NAME**
+**Tasks/SubTasks Done:**
+• TASK-ID: Task Name
+
+**Tasks/SubTasks in Progress:**
+• TASK-ID: Task Name (State)
+
+Keep it concise. Use the exact data provided.`;
+
+    const userPrompt = `Format this team daily summary for ${dateKey}:
+PROJECT: ${projectName}
+CYCLE INFO: ${cycleInfo}
+
+TEAM MEMBERS DATA:
+${formattedTeamData}`;
+
+    const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY });
+    const result = await generateText({
+      model: google(env.GEMINI_MODEL || "gemini-1.5-flash"),
+      system: systemPrompt,
+      prompt: userPrompt,
+      temperature: env.GEMINI_TEMPERATURE || 0.3,
+    });
+
+    const summary = result.text;
+
+    // Split into chunks if needed (Discord limit 4096)
+    const MAX_LENGTH = 4096;
+    const embeds = [];
+    let remaining = summary;
+
+    while (remaining.length > 0) {
+      let chunk = remaining.substring(0, MAX_LENGTH);
+      if (remaining.length > MAX_LENGTH) {
+        const lastNewline = chunk.lastIndexOf("\n");
+        if (lastNewline > MAX_LENGTH * 0.8) {
+          chunk = remaining.substring(0, lastNewline);
+        }
+      }
+
+      embeds.push({
+        color: 0x5865f2,
+        ...(embeds.length === 0 ? { title: `📊 Team Daily Summary for ${projectName} (${dateKey})` } : {}),
+        description: chunk,
+        footer: { text: `${teamMemberData.length} team members • Page ${embeds.length + 1}` }
+      });
+
+      remaining = remaining.substring(chunk.length);
+    }
+
+    await sendFollowUp(app_id, interaction_token, { embeds });
+    logger.info('Team summary sent successfully');
+
+  } catch (error) {
+    logger.error(`Error generating team summary: ${error.message}`, error);
+    await sendFollowUp(app_id, interaction_token, {
+      content: `❌ **Error generating summary**\n\n${error.message}`
+    });
+  }
+}
+
+/**
  * Interaction Endpoint
  */
 router.post('/', async (request, env, ctx) => {
@@ -166,13 +456,22 @@ router.post('/', async (request, env, ctx) => {
         type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
       });
     }
+
+    if (name === 'team_daily_summary') {
+      ctx.waitUntil(processTeamDailySummary(interaction, env));
+      return Response.json({
+        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+      });
+    }
   }
 
   if (interaction.type === InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE) {
     const { name, options } = interaction.data;
     const focusedOption = options?.find(o => o.focused);
 
-    if (!focusedOption) return Response.json({ type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, data: { choices: [] } });
+    if (!focusedOption) {
+      return Response.json({ type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, data: { choices: [] } });
+    }
 
     if (name === 'person_daily_summary' && focusedOption.name === 'person') {
       const people = await getPeople();
@@ -201,6 +500,35 @@ router.post('/', async (request, env, ctx) => {
         type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
         data: { choices: filtered }
       });
+    }
+
+    // Team daily summary - project autocomplete
+    if (name === 'team_daily_summary' && focusedOption.name === 'project') {
+      try {
+        logger.info(`Autocomplete for team_daily_summary project: "${focusedOption.value}"`);
+        const projects = await fetchProjects();
+        logger.info(`Fetched ${projects.length} projects for autocomplete`);
+        
+        const filtered = projects
+          .filter(p =>
+            p.name.toLowerCase().includes(focusedOption.value.toLowerCase()) ||
+            p.identifier.toLowerCase().includes(focusedOption.value.toLowerCase())
+          )
+          .slice(0, 25)
+          .map(p => ({ name: `${p.name} (${p.identifier})`, value: p.identifier }));
+
+        logger.info(`Returning ${filtered.length} filtered projects`);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: filtered }
+        });
+      } catch (error) {
+        logger.error(`Error in team_daily_summary autocomplete: ${error.message}`);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: [] }
+        });
+      }
     }
   }
 
