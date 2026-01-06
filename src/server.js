@@ -198,6 +198,7 @@ async function processTeamDailySummary(interaction, env) {
     // Get project members
     const members = await getProjectMembers(projectId);
     logger.info(`Found ${members.length} members in project ${projectName}`);
+    logger.info(`Member list: ${members.map(m => m.display_name || m.user?.display_name || m.email).join(", ")}`);
 
     // Get cycle info
     const cycles = await getCyclesWithCache(projectId);
@@ -244,6 +245,8 @@ async function processTeamDailySummary(interaction, env) {
 
     // Get activities for each team member
     const teamMemberData = [];
+    logger.info(`Processing ${members.length} team members for activities on ${dateKey}`);
+    
     for (const member of members) {
       const userData = member.member || member.user || member;
       const memberName =
@@ -253,7 +256,12 @@ async function processTeamDailySummary(interaction, env) {
         userData.email ||
         "Unknown";
 
-      if (memberName === "Unknown") continue;
+      if (memberName === "Unknown") {
+        logger.warn(`Skipping member with Unknown name`);
+        continue;
+      }
+
+      logger.info(`Processing member: ${memberName}`);
 
       try {
         const personActivities = await getTeamActivities(
@@ -318,10 +326,13 @@ async function processTeamDailySummary(interaction, env) {
         }
 
         teamMemberData.push({ name: memberName, completed, inProgress });
+        logger.info(`Added member ${memberName} to summary: ${completed.length} done, ${inProgress.length} in progress`);
       } catch (error) {
         logger.warn(`Error fetching activities for ${memberName}: ${error.message}`);
       }
     }
+
+    logger.info(`Team member processing complete: ${teamMemberData.length} members with data`);
 
     if (teamMemberData.length === 0) {
       await sendFollowUp(app_id, interaction_token, {
@@ -394,10 +405,11 @@ FORMATTING RULES:
 - If a member has no completed tasks, show "None" under Done
 - If a member has no in-progress tasks, show "None" under In Progress
 - Separate team members with blank lines
-- Only include team members who have activity for the date
+- Include ALL team members provided, even those with no activity
 
-If no team members have activities, respond with: "No team activity found for this period."`;
+If no team members have activities, respond with: "No team activity found for this period."
 
+CRITICAL: You MUST include ALL team members in the output, even those with no completed or in-progress tasks.`;
     const userPrompt = `Format this team daily summary for ${dateKey}:
 PROJECT: ${projectName}
 CYCLE INFO: ${cycleInfo}
