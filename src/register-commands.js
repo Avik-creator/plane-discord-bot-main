@@ -19,17 +19,18 @@ const commands = [
     )
     .addStringOption(option =>
       option
-        .setName('date')
-        .setDescription('Date to summarize (YYYY-MM-DD)')
-        .setRequired(false)
+        .setName('team')
+        .setDescription('Filter by specific project/team')
+        .setRequired(true)
+        .setAutocomplete(true)
     )
     .addStringOption(option =>
       option
-        .setName('team')
-        .setDescription('Filter by specific project/team')
+        .setName('date')
+        .setDescription('Date to summarize (YYYY-MM-DD)')
         .setRequired(false)
-        .setAutocomplete(true)
     ),
+
 
   new SlashCommandBuilder()
     .setName('team_daily_summary')
