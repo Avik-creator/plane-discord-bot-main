@@ -149,7 +149,8 @@ async function fetchWorkItemSubitems(projectId, workItemId) {
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(
-          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/sub-issues/`
+          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/work-items/${workItemId}/sub-issues/`,
+          { params: { expand: "state" } }
         ),
       `subitems(${workItemId})`
     );
@@ -460,6 +461,7 @@ async function fetchWorkItems(projectId) {
     iteration++;
     const params = {
       order_by: "-updated_at", // Fetch most recently updated first
+      expand: "state", // Expand state details to get full state information
       ...(cursor ? { cursor } : {}),
     };
     const response = await apiRequestWithRetry(
@@ -473,7 +475,7 @@ async function fetchWorkItems(projectId) {
 
     const data = response.data;
     const resultsCount = Array.isArray(data) ? data.length : data.results?.length || 0;
-    
+
     logger.info(
       `Work items API response: ${JSON.stringify({
         isArray: Array.isArray(data),
@@ -640,7 +642,7 @@ async function _getTeamActivitiesInternal(
       const assigneeNames = workItem.assignee_details?.map(
         (a) => a.display_name || a.email || "Unassigned"
       ) || [];
-      
+
       if (assigneeNames.length > 0) {
         logger.debug(`Work item ${projectIdentifier}-${workItem.sequence_id}: assignees=[${assigneeNames.join(", ")}]`);
       }
@@ -977,7 +979,7 @@ async function fetchCycles(projectId) {
 async function getWorkItemsWithCache(projectId) {
   const cacheKey = `workItems:${projectId}`;
   const cacheEntry = workItemsCache.get(projectId);
-  
+
   // Return from cache if valid
   if (cacheEntry && isCacheValid(cacheEntry.timestamp, WORK_ITEMS_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached work items for project ${projectId}`);
@@ -995,12 +997,12 @@ async function getWorkItemsWithCache(projectId) {
     try {
       logger.info(`📡 Fetching fresh work items for project ${projectId}`);
       const workItems = await fetchWorkItems(projectId);
-      
+
       workItemsCache.set(projectId, {
         data: workItems,
         timestamp: Date.now(),
       });
-      
+
       return workItems;
     } finally {
       pendingRequests.delete(cacheKey);
@@ -1020,7 +1022,7 @@ async function getWorkItemsWithCache(projectId) {
 async function getActivitiesWithCache(projectId, workItemId) {
   const cacheKey = `activities:${workItemId}`;
   const cacheEntry = activitiesCache.get(workItemId);
-  
+
   if (cacheEntry && isCacheValid(cacheEntry.timestamp, ACTIVITIES_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached activities for work item ${workItemId}`);
     return cacheEntry.data;
@@ -1035,12 +1037,12 @@ async function getActivitiesWithCache(projectId, workItemId) {
     try {
       logger.info(`📡 Fetching fresh activities for work item ${workItemId}`);
       const activities = await fetchWorkItemActivities(projectId, workItemId);
-      
+
       activitiesCache.set(workItemId, {
         data: activities,
         timestamp: Date.now(),
       });
-      
+
       return activities;
     } finally {
       pendingRequests.delete(cacheKey);
@@ -1060,7 +1062,7 @@ async function getActivitiesWithCache(projectId, workItemId) {
 async function getCommentsWithCache(projectId, workItemId) {
   const cacheKey = `comments:${workItemId}`;
   const cacheEntry = commentsCache.get(workItemId);
-  
+
   if (cacheEntry && isCacheValid(cacheEntry.timestamp, COMMENTS_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached comments for work item ${workItemId}`);
     return cacheEntry.data;
@@ -1075,12 +1077,12 @@ async function getCommentsWithCache(projectId, workItemId) {
     try {
       logger.info(`📡 Fetching fresh comments for work item ${workItemId}`);
       const comments = await fetchWorkItemComments(projectId, workItemId);
-      
+
       commentsCache.set(workItemId, {
         data: comments,
         timestamp: Date.now(),
       });
-      
+
       return comments;
     } finally {
       pendingRequests.delete(cacheKey);
@@ -1100,7 +1102,7 @@ async function getCommentsWithCache(projectId, workItemId) {
 async function getSubitemsWithCache(projectId, workItemId) {
   const cacheKey = `subitems:${workItemId}`;
   const cacheEntry = subitemsCache.get(workItemId);
-  
+
   if (cacheEntry && isCacheValid(cacheEntry.timestamp, SUBITEMS_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached subitems for work item ${workItemId}`);
     return cacheEntry.data;
@@ -1115,12 +1117,12 @@ async function getSubitemsWithCache(projectId, workItemId) {
     try {
       logger.info(`📡 Fetching fresh subitems for work item ${workItemId}`);
       const subitems = await fetchWorkItemSubitems(projectId, workItemId);
-      
+
       subitemsCache.set(workItemId, {
         data: subitems,
         timestamp: Date.now(),
       });
-      
+
       return subitems;
     } finally {
       pendingRequests.delete(cacheKey);
@@ -1139,7 +1141,7 @@ async function getSubitemsWithCache(projectId, workItemId) {
 async function getCyclesWithCache(projectId) {
   const cacheKey = `cycles:${projectId}`;
   const cacheEntry = cyclesCache.get(projectId);
-  
+
   if (cacheEntry && isCacheValid(cacheEntry.timestamp, CYCLES_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached cycles for project ${projectId}`);
     return cacheEntry.data;
@@ -1154,12 +1156,12 @@ async function getCyclesWithCache(projectId) {
     try {
       logger.info(`📡 Fetching fresh cycles for project ${projectId}`);
       const cycles = await fetchCycles(projectId);
-      
+
       cyclesCache.set(projectId, {
         data: cycles,
         timestamp: Date.now(),
       });
-      
+
       return cycles;
     } finally {
       pendingRequests.delete(cacheKey);

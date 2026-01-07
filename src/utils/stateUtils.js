@@ -5,7 +5,7 @@ export const STATE_PATTERNS = {
   completed: ["done", "closed", "complete", "completed", "resolved"],
   blocked: ["block", "blocked", "blocking", "stuck", "on hold"],
   inProgress: ["progress", "in progress", "review", "active", "working", "started", "in review", "in qa"],
-  backlog: ["backlog", "todo", "to do", "open", "new", "planned"],
+  backlog: ["backlog", "todo", "to do", "open", "new", "planned", "none"],
 };
 
 /**

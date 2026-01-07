@@ -262,11 +262,23 @@ function processActivities(activities) {
         completed.push({ id: workItem.id, name: workItem.name });
       }
     } else {
+      // Normalize state display for better readability
+      let displayState = workItem.state;
+      if (matchesStateCategory(workItem.state, "blocked")) {
+        displayState = "Blocked";
+      } else if (matchesStateCategory(workItem.state, "backlog")) {
+        displayState = "Backlog";
+      } else if (matchesStateCategory(workItem.state, "inProgress")) {
+        displayState = workItem.state; // Keep original in-progress states
+      } else {
+        displayState = "Backlog"; // Default unknown states to Backlog
+      }
+
       if (!inProgress.find((c) => c.id === workItem.id)) {
         inProgress.push({
           id: workItem.id,
           name: workItem.name,
-          state: workItem.state,
+          state: displayState,
         });
       }
     }

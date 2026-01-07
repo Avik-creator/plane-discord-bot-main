@@ -7,25 +7,7 @@ import {
 import { generateText } from "ai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import logger from "../utils/logger.js";
-
-/**
- * State detection patterns (case-insensitive)
- */
-const STATE_PATTERNS = {
-  completed: ["done", "closed", "complete", "completed"],
-  blocked: ["block", "blocked", "blocking"],
-  inProgress: ["progress", "in progress", "review", "active", "working"],
-};
-
-/**
- * Check if a state string matches a category
- */
-function matchesStateCategory(state, category) {
-  if (!state || typeof state !== "string") return false;
-  const stateLower = state.toLowerCase();
-  const patterns = STATE_PATTERNS[category] || [];
-  return patterns.some((pattern) => stateLower.includes(pattern));
-}
+import { matchesStateCategory } from "../utils/stateUtils.js";
 
 /**
  * Convert a date string (YYYY-MM-DD) to UTC start/end range
@@ -155,9 +137,18 @@ export async function getPersonDailySummary({
       if (matchesStateCategory(state, "completed")) {
         completed.push({ id: workItem.id, name: workItem.name });
       } else if (matchesStateCategory(state, "blocked")) {
-        blockers.push({ id: workItem.id, name: workItem.name, state: state });
+        blockers.push({ id: workItem.id, name: workItem.name, state: "Blocked" });
       } else {
-        inProgress.push({ id: workItem.id, name: workItem.name, state: state });
+        // Normalize state display for inProgress items
+        let displayState = state;
+        if (matchesStateCategory(state, "backlog")) {
+          displayState = "Backlog";
+        } else if (matchesStateCategory(state, "inProgress")) {
+          displayState = state; // Keep original in-progress states
+        } else {
+          displayState = "Backlog"; // Default unknown states to Backlog
+        }
+        inProgress.push({ id: workItem.id, name: workItem.name, state: displayState });
       }
     }
 
@@ -184,25 +175,25 @@ export async function getPersonDailySummary({
   // Parse date string (YYYY-MM-DD) as UTC start of day
   const [year, month, day] = date.split('-').map(Number);
   const queryDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-  
+
   const cycleData = new Map();
   for (const projectId of projectIds) {
     const proj = projectLookup.get(projectId);
     if (proj) {
       const allCycles = await getCyclesWithCache(proj.id);
-      
+
       // Debug: log all cycles
       logger.info(`Project ${projectId} has ${allCycles.length} total cycles`);
       if (allCycles.length > 0) {
-        logger.info(`All cycles: ${JSON.stringify(allCycles.map(c => ({ 
-          name: c.name, 
-          startDate: c.startDate, 
+        logger.info(`All cycles: ${JSON.stringify(allCycles.map(c => ({
+          name: c.name,
+          startDate: c.startDate,
           endDate: c.endDate,
           totalIssues: c.totalIssues,
           completedIssues: c.completedIssues
         })))}`);
       }
-      
+
       // Filter for cycles that contain the queried date
       const relevantCycles = allCycles.filter(c => {
         if (!c.startDate || !c.endDate) {
@@ -211,25 +202,25 @@ export async function getPersonDailySummary({
         }
         const cycleStart = new Date(c.startDate);
         const cycleEnd = new Date(c.endDate);
-        
+
         // Compare dates (ignore time portion) - check if queryDate falls within cycle range
         const cycleStartDate = new Date(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth(), cycleStart.getUTCDate());
         const cycleEndDate = new Date(cycleEnd.getUTCFullYear(), cycleEnd.getUTCMonth(), cycleEnd.getUTCDate());
         const queryDateLocal = new Date(queryDate.getUTCFullYear(), queryDate.getUTCMonth(), queryDate.getUTCDate());
-        
+
         const isInRange = queryDateLocal >= cycleStartDate && queryDateLocal <= cycleEndDate;
         logger.debug(`Cycle ${c.name}: ${c.startDate} to ${c.endDate}, queryDate ${date}, inRange: ${isInRange}`);
         return isInRange;
       });
-      
+
       // If no cycles matched by date, try matching work items to cycles
       if (relevantCycles.length === 0 && allCycles.length > 0) {
         logger.info(`No cycles matched by date range for ${projectId}, checking work items for cycle hints`);
-        
+
         // Get work items for this project from personActivities
         const projectActivities = personActivities.filter(a => a.project === projectId);
         const mentionedCycleNames = new Set();
-        
+
         // Look for patterns like "Week X" in work items
         for (const activity of projectActivities) {
           if (activity.workItemName && activity.workItemName.includes('Week')) {
@@ -239,7 +230,7 @@ export async function getPersonDailySummary({
             }
           }
         }
-        
+
         // Match cycles by name if we found cycle hints
         if (mentionedCycleNames.size > 0) {
           const cyclesByName = allCycles.filter(c => mentionedCycleNames.has(c.name));
@@ -248,7 +239,7 @@ export async function getPersonDailySummary({
           continue;
         }
       }
-      
+
       logger.info(`Project ${projectId} relevant cycles for date ${date}: ${JSON.stringify(relevantCycles.map(c => ({ name: c.name, startDate: c.startDate, endDate: c.endDate })))}`);
       cycleData.set(projectId, relevantCycles);
     }
