@@ -103,7 +103,34 @@ async function processPersonDailySummary(interaction, env) {
   const date = commandOptions.find(o => o.name === 'date')?.value || new Date().toISOString().split('T')[0];
   const projectFilter = commandOptions.find(o => o.name === 'team')?.value;
 
+  // Validate required parameters
+  if (!personName || typeof personName !== 'string' || personName.trim() === '') {
+    logger.warn('Person name is required for person_daily_summary command');
+    return Response.json({
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: {
+        content: "❌ **Error:** Please specify a person name. Use the autocomplete dropdown to select from available team members.",
+        flags: 64 // Ephemeral
+      }
+    });
+  }
+
   try {
+    // Validate date format if provided
+    if (commandOptions.find(o => o.name === 'date')?.value) {
+      const dateObj = new Date(date);
+      if (isNaN(dateObj.getTime())) {
+        logger.warn(`Invalid date provided: ${date}`);
+        return Response.json({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: {
+            content: "❌ **Invalid date format**\n\nPlease use YYYY-MM-DD format (e.g., 2025-01-07).",
+            flags: 64 // Ephemeral
+          }
+        });
+      }
+    }
+
     logger.info(`Processing summary for ${personName} on ${date}`);
 
     const summary = await getPersonDailySummary({
@@ -158,6 +185,18 @@ async function processTeamDailySummary(interaction, env) {
   const projectFilter = commandOptions.find(o => o.name === 'project')?.value;
   const dateInput = commandOptions.find(o => o.name === 'date')?.value;
 
+  // Validate required project parameter
+  if (!projectFilter || typeof projectFilter !== 'string' || projectFilter.trim() === '') {
+    logger.warn('Project parameter is required for team_daily_summary command');
+    return Response.json({
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: {
+        content: "❌ **Error:** Please specify a project. Use the autocomplete dropdown to select from available projects.",
+        flags: 64 // Ephemeral
+      }
+    });
+  }
+
   try {
     // Parse date
     let targetDate = new Date();
@@ -179,17 +218,18 @@ async function processTeamDailySummary(interaction, env) {
 
     logger.info(`Processing team summary for project ${projectFilter} on ${dateKey}`);
 
-    // Get project info
+    // Get project info (project is now required)
     const projects = await fetchProjects();
     const selectedProject = projects.find(
       (p) =>
-        p.name.toLowerCase() === projectFilter.toLowerCase() ||
-        p.identifier.toLowerCase() === projectFilter.toLowerCase()
+        p.name?.toLowerCase() === projectFilter.toLowerCase() ||
+        p.identifier?.toLowerCase() === projectFilter.toLowerCase() ||
+        p.id === projectFilter
     );
 
     if (!selectedProject) {
       await sendFollowUp(app_id, interaction_token, {
-        content: `❌ **Project not found**: ${projectFilter}`
+        content: `❌ **Project not found**: \`${projectFilter}\`\n\nPlease use the autocomplete dropdown to select a valid project.`
       });
       return;
     }
@@ -197,13 +237,11 @@ async function processTeamDailySummary(interaction, env) {
     const projectId = selectedProject.id;
     const projectName = selectedProject.name;
 
-    // Get project members
+    // Get project-specific data (project is now required)
     const members = await getProjectMembers(projectId);
+    const cycles = await getCyclesWithCache(projectId);
     logger.info(`Found ${members.length} members in project ${projectName}`);
     logger.info(`Member list: ${members.map(m => m.display_name || m.user?.display_name || m.email).join(", ")}`);
-
-    // Get cycle info
-    const cycles = await getCyclesWithCache(projectId);
     logger.info(`Found ${cycles.length} total cycles for project`);
 
     const [year, month, day] = dateKey.split('-').map(Number);
@@ -267,7 +305,7 @@ async function processTeamDailySummary(interaction, env) {
       }
 
       // Skip ignored members
-      if (ignoredMembers.some(ignored => memberName.toLowerCase().includes(ignored))) {
+      if (memberName && typeof memberName === 'string' && ignoredMembers.some(ignored => memberName.toLowerCase().includes(ignored))) {
         logger.info(`Skipping ignored member: ${memberName}`);
         continue;
       }
@@ -714,13 +752,22 @@ router.post('/', async (request, env, ctx) => {
         const projects = await fetchProjects();
         logger.info(`Fetched ${projects.length} projects for autocomplete`);
 
+        const focusedValue = focusedOption.value?.toLowerCase() || '';
+
         const filtered = projects
-          .filter(p =>
-            p.name.toLowerCase().includes(focusedOption.value.toLowerCase()) ||
-            p.identifier.toLowerCase().includes(focusedOption.value.toLowerCase())
-          )
+          .filter(p => {
+            if (!p) return false;
+            if (!focusedValue) return true; // Show all if no input
+
+            const nameMatch = p.name?.toLowerCase().includes(focusedValue);
+            const identifierMatch = p.identifier?.toLowerCase().includes(focusedValue);
+            return nameMatch || identifierMatch;
+          })
           .slice(0, 25)
-          .map(p => ({ name: `${p.name} (${p.identifier})`, value: p.identifier }));
+          .map(p => ({
+            name: `${p.name || "Unknown"} (${p.identifier || "no-id"})`.substring(0, 100),
+            value: p.identifier || p.id
+          }));
 
         logger.info(`Returning ${filtered.length} filtered projects`);
         return Response.json({

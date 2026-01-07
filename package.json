@@ -13,6 +13,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "deploy": "node src/deploy-commands.js",
+    "register-commands": "node src/register-commands.js",
     "worker:dev": "wrangler dev",
     "publish": "wrangler publish"
   },

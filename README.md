@@ -73,18 +73,18 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = 0.3
 ```
 
-### 4. Deploying Commands
+### 4. Registering Commands
 
 Before running the worker, you must register the slash commands with Discord:
 
-1. Create a `.env` file for the registration script:
+1. Create a `.env` file with your Discord credentials:
    ```env
-   DISCORD_TOKEN=your_token
-   DISCORD_APPLICATION_ID=your_app_id
+   DISCORD_TOKEN=your_discord_bot_token_here
+   DISCORD_CLIENT_ID=your_discord_application_id_here
    ```
-2. Run the deployment script:
+2. Register the commands:
    ```bash
-   npm run deploy
+   npm run register-commands
    ```
 
 ### 5. Local Development
@@ -111,13 +111,20 @@ Once deployed, update the **Interactions Endpoint URL** in Discord to your worke
 
 ## Available Commands
 
-| Command                 | Description                                     |
-| ----------------------- | ----------------------------------------------- |
-| `/person_daily_summary` | Get your personalized AI daily summary in RADAR |
-| `/create-issue`         | Create a new issue in Plane                     |
-| `/view-issue`           | View details of a specific issue                |
-| `/get-issues`           | Get a list of issues by status                  |
-| `/upload-file`          | Upload a file to an issue                       |
+| Command                 | Description                                              | Parameters |
+| ----------------------- | -------------------------------------------------------- | ---------- |
+| `/person_daily_summary` | Get personalized AI daily summary for a team member     | person (required), date (optional), team (optional) |
+| `/team_daily_summary`   | Get team work summary for a specific project             | project (required), date (optional) |
+
+### Registering Commands
+
+After setting up environment variables, register the slash commands:
+
+```bash
+npm run register-commands
+```
+
+This will register the commands with Discord and make them available in your server.
 
 ## Project Structure
 
