@@ -45,6 +45,7 @@ STRICT RULES:
 3. DO NOT add encouragement, opinions, or commentary
 4. Use clear, professional language
 5. Follow the EXACT output format below
+6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
 
 OUTPUT FORMAT:
 
@@ -61,6 +62,10 @@ CYCLE_NAME -> X% completed
 • TASK-ID: Task Name (State)
 [or "None" if no in-progress items]
 
+**Comments/Updates:**
+• TASK-ID: Brief comment summary
+[or "None" if no comments]
+
 **TEAM_MEMBER_B**
 
 **Tasks/SubTasks Done:**
@@ -68,6 +73,9 @@ CYCLE_NAME -> X% completed
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
+
+**Comments/Updates:**
+• TASK-ID: Brief comment summary
 
 [Continue for all team members...]
 
@@ -80,14 +88,16 @@ FORMATTING RULES:
 - Use bullet points (•) for task lists
 - Include task ID and name for each item
 - For in-progress items, include the state in parentheses
+- For comments, include the task ID and a brief summary of the update
 - If a member has no completed tasks, show "None" under Done
 - If a member has no in-progress tasks, show "None" under In Progress
+- If a member has no comments, show "None" under Comments/Updates
 - Separate team members with blank lines
 - Only include team members who have activity for the date
 
 If no team members have activities, respond with: "No team activity found for this period."`;
 
-const DAILY_SUMMARY_PROMPT = `Format this team daily summary for {{date}} using the exact format specified.
+const DAILY_SUMMARY_PROMPT = `Format this team daily summary for {{date}} using the exact format specified. Include comments as they show progress on tasks even when there are no formal state changes.
 
 PROJECT: {{projectName}}
 CYCLE INFO: {{cycleInfo}}
@@ -95,7 +105,7 @@ CYCLE INFO: {{cycleInfo}}
 TEAM MEMBERS DATA:
 {{teamData}}
 
-Generate the formatted output now. Use ALL data provided. Do not omit any team members or tasks.`;
+Generate the formatted output now. Use ALL data provided. Do not omit any team members, tasks, or comments.`;
 
 export default {
   data: new SlashCommandBuilder()
@@ -293,6 +303,7 @@ export default {
           const completed = [];
           const inProgress = [];
           const workItemStates = new Map();
+          const comments = []; // Store comments for progress tracking
 
           for (const activity of personActivities) {
             const workItemId = activity.workItem;
@@ -312,6 +323,38 @@ export default {
                     state: state,
                     time: activity.time || activity.updatedAt,
                   });
+                }
+                break;
+
+              case "comment":
+                // Extract comment text - handle both stripped and HTML formats
+                const commentText = activity.comment || "";
+                if (commentText.trim().length > 0) {
+                  // Truncate long comments to 100 chars for summary
+                  const truncatedComment = commentText.length > 100 
+                    ? commentText.substring(0, 100) + "..." 
+                    : commentText;
+                  
+                  comments.push({
+                    id: workItemId,
+                    name: workItemName,
+                    comment: truncatedComment,
+                    actor: activity.actor,
+                    time: activity.time,
+                  });
+                  
+                  // Track work item with comment as in-progress (unless already marked as completed)
+                  if (!completed.find((c) => c.id === workItemId)) {
+                    const existing = inProgress.find((c) => c.id === workItemId);
+                    if (!existing) {
+                      inProgress.push({
+                        id: workItemId,
+                        name: workItemName,
+                        state: "In Progress (Updated via comment)",
+                        hasComments: true,
+                      });
+                    }
+                  }
                 }
                 break;
 
@@ -351,11 +394,12 @@ export default {
           }
 
           // Only add member if they have any activity
-          if (completed.length > 0 || inProgress.length > 0) {
+          if (completed.length > 0 || inProgress.length > 0 || comments.length > 0) {
             teamMemberData.push({
               name: memberName,
               completed,
               inProgress,
+              comments, // Include comments in member data
             });
           }
         } catch (error) {
@@ -388,8 +432,28 @@ export default {
                   .map((t) => `  • ${t.id}: ${t.name} (${t.state})`)
                   .join("\n")
               : "  None";
+          
+          // Format comments - extract unique comments by task
+          const commentsByTask = {};
+          member.comments?.forEach((comment) => {
+            if (!commentsByTask[comment.id]) {
+              commentsByTask[comment.id] = [];
+            }
+            commentsByTask[comment.id].push(comment.comment);
+          });
+          
+          const commentsText = Object.keys(commentsByTask).length > 0
+            ? Object.entries(commentsByTask)
+                .map(([taskId, commentList]) => {
+                  const taskName = member.inProgress.find((t) => t.id === taskId)?.name || 
+                                   member.completed.find((t) => t.id === taskId)?.name || 
+                                   taskId;
+                  return `  • ${taskId}: ${commentList[0]}`; // Use first comment as summary
+                })
+                .join("\n")
+            : "  None";
 
-          return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}`;
+          return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}\nCOMMENTS:\n${commentsText}`;
         })
         .join("\n\n");
 
