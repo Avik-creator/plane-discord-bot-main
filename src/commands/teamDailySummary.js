@@ -393,6 +393,11 @@ export default {
             }
           }
 
+          // Log comment count for debugging
+          if (comments.length > 0) {
+            logger.info(`Member ${memberName}: Found ${comments.length} comments`);
+          }
+
           // Only add member if they have any activity
           if (completed.length > 0 || inProgress.length > 0 || comments.length > 0) {
             teamMemberData.push({
@@ -464,7 +469,7 @@ export default {
         .replace("{{teamData}}", formattedTeamData);
 
       logger.info(
-        `Calling Gemini API with ${teamMemberData.length} team members (${userPrompt.length} chars prompt)`
+        `Calling Gemini API with ${teamMemberData.length} team members (${userPrompt.length} chars prompt). Formatted data sample:\n${formattedTeamData.substring(0, 500)}`
       );
 
       const geminiStartTime = Date.now();

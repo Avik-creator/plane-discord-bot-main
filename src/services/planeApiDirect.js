@@ -640,6 +640,10 @@ async function _getTeamActivitiesInternal(
       const assigneeNames = workItem.assignee_details?.map(
         (a) => a.display_name || a.email || "Unassigned"
       ) || [];
+      
+      if (assigneeNames.length > 0) {
+        logger.debug(`Work item ${projectIdentifier}-${workItem.sequence_id}: assignees=[${assigneeNames.join(", ")}]`);
+      }
 
       // Queue activity fetch task
       activityFetchTasks.push({
@@ -725,12 +729,14 @@ async function _getTeamActivitiesInternal(
                   comment.actor || comment.created_by
                 );
 
-                // Filter by actor if requested (fuzzy name matching)
+                // For comments: only include if the person being processed wrote the comment
+                // This ensures comments only appear in the summary of the person who wrote them
                 if (actorFilter && !namesMatch(commentActor, actorFilter)) {
+                  logger.debug(`Comment on ${task.workItemIdentifier}: written by ${commentActor}, but filtering for ${actorFilter}, skipping`);
                   continue;
                 }
 
-                foundActivityInRange = true;
+                logger.debug(`  ✓ Including comment on ${task.workItemIdentifier} by ${commentActor}`);
 
                 activities.push({
                   type: "comment",

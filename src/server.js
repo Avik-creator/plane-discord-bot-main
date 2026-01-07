@@ -277,6 +277,7 @@ async function processTeamDailySummary(interaction, env) {
         const completed = [];
         const inProgress = [];
         const workItemStates = new Map();
+        const comments = []; // Store comments for progress tracking
 
         for (const activity of personActivities) {
           const workItemId = activity.workItem;
@@ -299,6 +300,38 @@ async function processTeamDailySummary(interaction, env) {
                 state: state,
                 time: activity.time || activity.updatedAt,
               });
+            }
+          } else if (activity.type === "comment") {
+            // Extract comment text - handle both stripped and HTML formats
+            const commentText = activity.comment || "";
+            logger.debug(`Processing comment on ${workItemId}: text length=${commentText.length}, actor=${activity.actor}`);
+            if (commentText.trim().length > 0) {
+              // Truncate long comments to 100 chars for summary
+              const truncatedComment = commentText.length > 200 
+                ? commentText.substring(0, 100) + "..." 
+                : commentText;
+              
+              logger.debug(`✓ Adding comment to ${workItemId}: "${truncatedComment}"`);
+              comments.push({
+                id: workItemId,
+                name: workItemName,
+                comment: truncatedComment,
+                actor: activity.actor,
+                time: activity.time,
+              });
+              
+              // Track work item with comment as in-progress (unless already marked as completed)
+              if (!completed.find((c) => c.id === workItemId)) {
+                const existing = inProgress.find((c) => c.id === workItemId);
+                if (!existing) {
+                  inProgress.push({
+                    id: workItemId,
+                    name: workItemName,
+                    state: "In Progress (Updated via comment)",
+                    hasComments: true,
+                  });
+                }
+              }
             }
           } else if (activity.type === "subitem") {
             const subState = activity.state || "Unknown";
@@ -330,8 +363,14 @@ async function processTeamDailySummary(interaction, env) {
           }
         }
 
-        teamMemberData.push({ name: memberName, completed, inProgress });
-        logger.info(`Added member ${memberName} to summary: ${completed.length} done, ${inProgress.length} in progress`);
+        // Log comment count for debugging
+        if (comments.length > 0) {
+          logger.info(`Member ${memberName}: Found ${comments.length} comments`);
+        }
+
+        // Add all members to the summary, even if they have no activity
+        teamMemberData.push({ name: memberName, completed, inProgress, comments });
+        logger.info(`Added member ${memberName} to summary: ${completed.length} done, ${inProgress.length} in progress, ${comments.length} comments`);
       } catch (error) {
         logger.warn(`Error fetching activities for ${memberName}: ${error.message}`);
       }
@@ -360,7 +399,28 @@ async function processTeamDailySummary(interaction, env) {
         const inProgressText = member.inProgress.length > 0
           ? member.inProgress.map((t) => `  • ${t.id}: ${t.name} (${t.state})`).join("\n")
           : "  None";
-        return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}`;
+        
+        // Format comments - extract unique comments by task
+        const commentsByTask = {};
+        member.comments?.forEach((comment) => {
+          if (!commentsByTask[comment.id]) {
+            commentsByTask[comment.id] = [];
+          }
+          commentsByTask[comment.id].push(comment.comment);
+        });
+        
+        const commentsText = Object.keys(commentsByTask).length > 0
+          ? Object.entries(commentsByTask)
+              .map(([taskId, commentList]) => {
+                const taskName = member.inProgress.find((t) => t.id === taskId)?.name || 
+                                 member.completed.find((t) => t.id === taskId)?.name || 
+                                 taskId;
+                return `  • ${taskId}: ${commentList[0]}`; // Use first comment as summary
+              })
+              .join("\n")
+          : "  None";
+
+        return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}\nCOMMENTS:\n${commentsText}`;
       })
       .join("\n\n");
 
@@ -372,6 +432,7 @@ STRICT RULES:
 3. DO NOT add encouragement, opinions, or commentary
 4. Use clear, professional language
 5. Follow the EXACT output format below
+6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
 
 OUTPUT FORMAT:
 
@@ -388,6 +449,10 @@ CYCLE_NAME -> X% completed
 • TASK-ID: Task Name (State)
 [or "None" if no in-progress items]
 
+**Comments/Updates:**
+• TASK-ID: Brief comment summary
+[or "None" if no comments]
+
 **TEAM_MEMBER_B**
 
 **Tasks/SubTasks Done:**
@@ -395,6 +460,9 @@ CYCLE_NAME -> X% completed
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
+
+**Comments/Updates:**
+• TASK-ID: Brief comment summary
 
 [Continue for all team members...]
 
@@ -407,15 +475,17 @@ FORMATTING RULES:
 - Use bullet points (•) for task lists
 - Include task ID and name for each item
 - For in-progress items, include the state in parentheses
+- For comments, include the task ID and a brief summary of the update
 - If a member has no completed tasks, show "None" under Done
 - If a member has no in-progress tasks, show "None" under In Progress
+- If a member has no comments, show "None" under Comments/Updates
 - Separate team members with blank lines
 - Include ALL team members provided, even those with no activity
 
 If no team members have activities, respond with: "No team activity found for this period."
 
-CRITICAL: You MUST include ALL team members in the output, even those with no completed or in-progress tasks.`;
-    const userPrompt = `Format this team daily summary for ${dateKey}:
+CRITICAL: You MUST include ALL team members in the output, even those with no completed, in-progress, or comment activities.`;
+    const userPrompt = `Format this team daily summary for ${dateKey} using the exact format specified. Include comments as they show progress on tasks even when there are no formal state changes.
 PROJECT: ${projectName}
 CYCLE INFO: ${cycleInfo}
 
