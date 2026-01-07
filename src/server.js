@@ -10,6 +10,8 @@ import { generateText } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import logger from './utils/logger.js';
 
+//https://plane-discord-bot.abhinav-103.workers.dev
+
 const router = Router();
 
 /**
@@ -203,7 +205,7 @@ async function processTeamDailySummary(interaction, env) {
     // Get cycle info
     const cycles = await getCyclesWithCache(projectId);
     logger.info(`Found ${cycles.length} total cycles for project`);
-    
+
     const [year, month, day] = dateKey.split('-').map(Number);
     const queryDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
 
@@ -215,12 +217,12 @@ async function processTeamDailySummary(interaction, env) {
       }
       const cycleStart = new Date(c.startDate);
       const cycleEnd = new Date(c.endDate);
-      
+
       // Compare just the dates (ignore time)
       const cycleStartDate = new Date(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth(), cycleStart.getUTCDate());
       const cycleEndDate = new Date(cycleEnd.getUTCFullYear(), cycleEnd.getUTCMonth(), cycleEnd.getUTCDate());
       const queryDateLocal = new Date(queryDate.getUTCFullYear(), queryDate.getUTCMonth(), queryDate.getUTCDate());
-      
+
       const isInRange = queryDateLocal >= cycleStartDate && queryDateLocal <= cycleEndDate;
       logger.info(`Cycle "${c.name}": ${c.startDate} to ${c.endDate}, query date ${dateKey}, in range: ${isInRange}`);
       return isInRange;
@@ -246,10 +248,10 @@ async function processTeamDailySummary(interaction, env) {
     // Get activities for each team member
     const teamMemberData = [];
     logger.info(`Processing ${members.length} team members for activities on ${dateKey}`);
-    
+
     // Members to ignore in team summaries
     const ignoredMembers = ['suhas', 'abhinav'];
-    
+
     for (const member of members) {
       const userData = member.member || member.user || member;
       const memberName =
@@ -316,10 +318,10 @@ async function processTeamDailySummary(interaction, env) {
             logger.debug(`Processing comment on ${workItemId}: text length=${commentText.length}, actor=${activity.actor}`);
             if (commentText.trim().length > 0) {
               // Truncate long comments to 100 chars for summary
-              const truncatedComment = commentText.length > 200 
-                ? commentText.substring(0, 100) + "..." 
+              const truncatedComment = commentText.length > 200
+                ? commentText.substring(0, 100) + "..."
                 : commentText;
-              
+
               logger.debug(`✓ Adding comment to ${workItemId}: "${truncatedComment}"`);
               comments.push({
                 id: workItemId,
@@ -328,7 +330,7 @@ async function processTeamDailySummary(interaction, env) {
                 actor: activity.actor,
                 time: activity.time,
               });
-              
+
               // Track work item with comment as in-progress (unless already marked as completed)
               if (!completed.find((c) => c.id === workItemId)) {
                 const existing = inProgress.find((c) => c.id === workItemId);
@@ -408,7 +410,7 @@ async function processTeamDailySummary(interaction, env) {
         const inProgressText = member.inProgress.length > 0
           ? member.inProgress.map((t) => `  • ${t.id}: ${t.name} (${t.state})`).join("\n")
           : "  None";
-        
+
         // Format comments - extract unique comments by task
         const commentsByTask = {};
         member.comments?.forEach((comment) => {
@@ -417,16 +419,16 @@ async function processTeamDailySummary(interaction, env) {
           }
           commentsByTask[comment.id].push(comment.comment);
         });
-        
+
         const commentsText = Object.keys(commentsByTask).length > 0
           ? Object.entries(commentsByTask)
-              .map(([taskId, commentList]) => {
-                const taskName = member.inProgress.find((t) => t.id === taskId)?.name || 
-                                 member.completed.find((t) => t.id === taskId)?.name || 
-                                 taskId;
-                return `  • ${taskId}: ${commentList[0]}`; // Use first comment as summary
-              })
-              .join("\n")
+            .map(([taskId, commentList]) => {
+              const taskName = member.inProgress.find((t) => t.id === taskId)?.name ||
+                member.completed.find((t) => t.id === taskId)?.name ||
+                taskId;
+              return `  • ${taskId}: ${commentList[0]}`; // Use first comment as summary
+            })
+            .join("\n")
           : "  None";
 
         return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}\nCOMMENTS:\n${commentsText}`;
@@ -606,32 +608,103 @@ router.post('/', async (request, env, ctx) => {
     }
 
     if (name === 'person_daily_summary' && focusedOption.name === 'person') {
-      const people = await getPeople();
-      const filtered = people
-        .filter(p => p.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
-        .slice(0, 25)
-        .map(p => ({ name: p.name, value: p.name }));
+      try {
+        logger.debug(`Autocomplete for person_daily_summary person: "${focusedOption.value}"`);
+        const people = await getPeople();
+        logger.debug(`Fetched ${people.length} people for person_daily_summary autocomplete`);
 
-      return Response.json({
-        type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
-        data: { choices: filtered }
-      });
+        if (!people || people.length === 0) {
+          logger.warn("No people available for person_daily_summary autocomplete");
+          return Response.json({
+            type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+            data: { choices: [{ name: "No people found", value: "none" }] }
+          });
+        }
+
+        const focusedValue = focusedOption.value?.toLowerCase() || '';
+
+        const filtered = people
+          .filter(p => {
+            if (!p || !p.name) return false;
+            if (!focusedValue) return true; // Show all if no input
+            return p.name.toLowerCase().includes(focusedValue);
+          })
+          .slice(0, 25)
+          .map(p => ({ name: p.name, value: p.name }));
+
+        logger.debug(`Returning ${filtered.length} filtered people for person_daily_summary`);
+
+        if (filtered.length === 0) {
+          return Response.json({
+            type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+            data: { choices: [{ name: `No people match "${focusedValue}"`, value: "no_match" }] }
+          });
+        }
+
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: filtered }
+        });
+      } catch (error) {
+        logger.error("Error in person_daily_summary person autocomplete:", error);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: [{ name: "Error loading people", value: "error" }] }
+        });
+      }
     }
 
     if (name === 'person_daily_summary' && focusedOption.name === 'team') {
-      const projects = await fetchProjects();
-      const filtered = projects
-        .filter(p =>
-          p.name.toLowerCase().includes(focusedOption.value.toLowerCase()) ||
-          p.identifier.toLowerCase().includes(focusedOption.value.toLowerCase())
-        )
-        .slice(0, 25)
-        .map(p => ({ name: `${p.name} (${p.identifier})`, value: p.identifier }));
+      try {
+        logger.debug(`Autocomplete for person_daily_summary team: "${focusedOption.value}"`);
+        const projects = await fetchProjects();
+        logger.debug(`Fetched ${projects.length} projects for person_daily_summary autocomplete`);
 
-      return Response.json({
-        type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
-        data: { choices: filtered }
-      });
+        if (!projects || projects.length === 0) {
+          logger.warn("No projects available for person_daily_summary autocomplete");
+          return Response.json({
+            type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+            data: { choices: [{ name: "No projects found", value: "none" }] }
+          });
+        }
+
+        const focusedValue = focusedOption.value?.toLowerCase() || '';
+
+        const filtered = projects
+          .filter(p => {
+            if (!p) return false;
+            if (!focusedValue) return true; // Show all if no input
+
+            const nameMatch = p.name?.toLowerCase().includes(focusedValue);
+            const identifierMatch = p.identifier?.toLowerCase().includes(focusedValue);
+            return nameMatch || identifierMatch;
+          })
+          .slice(0, 25)
+          .map(p => ({
+            name: `${p.name || "Unknown"} (${p.identifier || "no-id"})`.substring(0, 100),
+            value: p.identifier || p.id
+          }));
+
+        logger.debug(`Returning ${filtered.length} filtered projects for person_daily_summary`);
+
+        if (filtered.length === 0) {
+          return Response.json({
+            type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+            data: { choices: [{ name: `No projects match "${focusedValue}"`, value: "no_match" }] }
+          });
+        }
+
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: filtered }
+        });
+      } catch (error) {
+        logger.error("Error in person_daily_summary team autocomplete:", error);
+        return Response.json({
+          type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT,
+          data: { choices: [{ name: "Error loading projects", value: "error" }] }
+        });
+      }
     }
 
     // Team daily summary - project autocomplete
@@ -640,7 +713,7 @@ router.post('/', async (request, env, ctx) => {
         logger.info(`Autocomplete for team_daily_summary project: "${focusedOption.value}"`);
         const projects = await fetchProjects();
         logger.info(`Fetched ${projects.length} projects for autocomplete`);
-        
+
         const filtered = projects
           .filter(p =>
             p.name.toLowerCase().includes(focusedOption.value.toLowerCase()) ||
@@ -772,7 +845,7 @@ async function handleScheduled(event, env, ctx) {
 
     // Get all workspace members
     const members = await getWorkspaceMembers();
-    
+
     if (!members || members.length === 0) {
       logger.warn('No workspace members found for scheduled summary');
       await sendMessageToChannel(channelId, discordToken, {
@@ -794,7 +867,7 @@ async function handleScheduled(event, env, ctx) {
     for (const member of members) {
       const userData = member.member || member.user || member;
       const displayName = member.display_name || userData.display_name || userData.first_name || userData.email;
-      
+
       if (!displayName || displayName === "Unknown User") {
         continue;
       }
@@ -802,7 +875,7 @@ async function handleScheduled(event, env, ctx) {
       try {
         // Clear activity caches before each person to ensure fresh, isolated data
         clearActivityCaches();
-        
+
         logger.info(`Processing scheduled summary for: ${displayName}`);
 
         // Step 1: Fetch and generate summary for this person
@@ -822,13 +895,13 @@ async function handleScheduled(event, env, ctx) {
 
         // Step 3: Generate the text summary
         const text = await generatePersonDailySummaryText(summary, env);
-        
+
         // Step 4: Create embed payload
         const embedPayload = parseScheduledSummaryToEmbed(displayName, today, text, env.WORKSPACE_SLUG);
 
         // Step 5: Send to Discord and wait for confirmation
         const sent = await sendMessageToChannel(channelId, discordToken, embedPayload);
-        
+
         if (sent) {
           summariesSent++;
           logger.info(`Successfully sent scheduled summary for ${displayName}`);
