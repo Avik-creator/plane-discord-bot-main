@@ -136,6 +136,10 @@ CYCLE_NAME -> X% completed
 • TASK-ID: Task Name (State)
 [or "None" if no in-progress items]
 
+**Tasks/SubTasks Todo:**
+• TASK-ID: Task Name (State)
+[or "None" if no todo items]
+
 **Comments/Updates:**
 • TASK-ID: Brief comment summary
 [or "None" if no comments]
@@ -146,6 +150,9 @@ CYCLE_NAME -> X% completed
 • TASK-ID: Task Name
 
 **Tasks/SubTasks in Progress:**
+• TASK-ID: Task Name (State)
+
+**Tasks/SubTasks Todo:**
 • TASK-ID: Task Name (State)
 
 **Comments/Updates:**
@@ -162,9 +169,11 @@ FORMATTING RULES:
 - Use bullet points (•) for task lists
 - Include task ID and name for each item
 - For in-progress items, include the state in parentheses
+- For todo items, include the state in parentheses
 - For comments, include the task ID and a brief summary of the update
 - If a member has no completed tasks, show "None" under Done
 - If a member has no in-progress tasks, show "None" under In Progress
+- If a member has no todo items, show "None" under Todo
 - If a member has no comments, show "None" under Comments/Updates
 - Separate team members with blank lines
 - Include ALL team members provided, even those with no activity
