@@ -103,6 +103,8 @@ async function processPersonDailySummary(interaction, env) {
   const date = commandOptions.find(o => o.name === 'date')?.value || new Date().toISOString().split('T')[0];
   const projectFilter = commandOptions.find(o => o.name === 'team')?.value;
 
+  //curl "http://localhost:8787/__scheduled?cron=0+*+*+*+*"
+
   // Validate required parameters
   if (!personName || typeof personName !== 'string' || personName.trim() === '') {
     logger.warn('Person name is required for person_daily_summary command');
@@ -159,9 +161,10 @@ async function processPersonDailySummary(interaction, env) {
  * State detection patterns (case-insensitive)
  */
 const STATE_PATTERNS = {
-  completed: ["done", "closed", "complete", "completed"],
-  blocked: ["block", "blocked", "blocking"],
-  inProgress: ["progress", "in progress", "review", "active", "working"],
+  completed: ["done", "closed", "complete", "completed", "resolved"],
+  blocked: ["block", "blocked", "blocking", "stuck", "on hold"],
+  inProgress: ["progress", "in progress", "review", "active", "working", "started", "in review", "in qa"],
+  backlog: ["backlog", "todo", "to do", "open", "new", "planned"],
 };
 
 function matchesStateCategory(state, category) {
@@ -859,8 +862,12 @@ function parseScheduledSummaryToEmbed(personName, date, text, workspaceSlug) {
 /**
  * Scheduled handler for cron trigger - runs at 9AM IST daily
  */
+/**
+ * Scheduled handler for cron trigger - runs at 8:00 PM IST (2:30 PM UTC) daily
+ * Now uses the same logic as team_daily_summary command
+ */
 async function handleScheduled(event, env, ctx) {
-  logger.info('Cron job triggered: Daily summary at 9AM IST');
+  logger.info('Cron job triggered: Daily team summary at 8:00 PM IST (2:30 PM UTC)');
 
   const channelId = env.DAILY_SUMMARY_CHANNEL_ID;
   const discordToken = env.DISCORD_TOKEN;
@@ -885,18 +892,17 @@ async function handleScheduled(event, env, ctx) {
   try {
     // Get today's date in IST (UTC+5:30)
     const now = new Date();
-    // Convert to IST by adding 5 hours 30 minutes
     const istOffset = 5.5 * 60 * 60 * 1000;
     const istDate = new Date(now.getTime() + istOffset);
     const today = istDate.toISOString().split('T')[0];
 
-    // Get all workspace members
-    const members = await getWorkspaceMembers();
+    // Get all projects
+    const projects = await fetchProjects();
 
-    if (!members || members.length === 0) {
-      logger.warn('No workspace members found for scheduled summary');
+    if (!projects || projects.length === 0) {
+      logger.warn('No projects found for scheduled team summary');
       await sendMessageToChannel(channelId, discordToken, {
-        content: `⚠️ No workspace members found for daily summary on ${today}`
+        content: `⚠️ No projects found for daily team summary on ${today}`
       });
       return;
     }
@@ -909,77 +915,339 @@ async function handleScheduled(event, env, ctx) {
     let summariesSent = 0;
     let noActivityCount = 0;
 
-    // Process each member SEQUENTIALLY to avoid data mixing
-    // Each person is fully processed before moving to the next
-    for (const member of members) {
-      const userData = member.member || member.user || member;
-      const displayName = member.display_name || userData.display_name || userData.first_name || userData.email;
+    // Initialize AI model once
+    const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY });
 
-      if (!displayName || displayName === "Unknown User") {
-        continue;
-      }
-
+    // Process each project SEQUENTIALLY to avoid data mixing
+    for (const project of projects) {
       try {
-        // Clear activity caches before each person to ensure fresh, isolated data
+        // Clear activity caches before each project to ensure fresh, isolated data
         clearActivityCaches();
 
-        logger.info(`Processing scheduled summary for: ${displayName}`);
+        const projectId = project.id;
+        const projectName = project.name;
+        const projectIdentifier = project.identifier;
 
-        // Step 1: Fetch and generate summary for this person
-        const summary = await getPersonDailySummary({
-          personName: displayName,
-          date: today,
-          projectFilter: null,
-          workspaceSlug: env.WORKSPACE_SLUG
-        });
+        logger.info(`Processing scheduled team summary for project: ${projectName}`);
 
-        // Step 2: Check if there's any activity
-        if (!summary.projects || summary.projects.length === 0) {
-          noActivityCount++;
-          logger.info(`No activity for ${displayName}, skipping`);
+        // Get project members
+        const members = await getProjectMembers(projectId);
+
+        if (!members || members.length === 0) {
+          logger.warn(`No members found in project ${projectName}, skipping`);
           continue;
         }
 
-        // Step 3: Generate the text summary
-        const text = await generatePersonDailySummaryText(summary, env);
+        // Get project cycles for completion info
+        const cycles = await getCyclesWithCache(projectId);
 
-        // Step 4: Create embed payload
-        const embedPayload = parseScheduledSummaryToEmbed(displayName, today, text, env.WORKSPACE_SLUG);
+        // Parse date for activity filtering
+        const startOfDay = new Date(istDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(istDate);
+        endOfDay.setHours(23, 59, 59, 999);
 
-        // Step 5: Send to Discord and wait for confirmation
-        const sent = await sendMessageToChannel(channelId, discordToken, embedPayload);
+        // Find active cycles
+        const [year, month, day] = today.split('-').map(Number);
+        const queryDate = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
+
+        const relevantCycles = cycles.filter((c) => {
+          if (!c.startDate || !c.endDate) return false;
+          const cycleStart = new Date(c.startDate);
+          const cycleEnd = new Date(c.endDate);
+          const cycleStartDate = new Date(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth(), cycleStart.getUTCDate());
+          const cycleEndDate = new Date(cycleEnd.getUTCFullYear(), cycleEnd.getUTCMonth(), cycleEnd.getUTCDate());
+          const queryDateLocal = new Date(queryDate.getUTCFullYear(), queryDate.getUTCMonth(), queryDate.getUTCDate());
+          return queryDateLocal >= cycleStartDate && queryDateLocal <= cycleEndDate;
+        });
+
+        let cycleInfo = "No active cycles";
+        if (relevantCycles.length > 0) {
+          cycleInfo = relevantCycles
+            .map((c) => {
+              const totalIssues = c.totalIssues || 0;
+              const completedIssues = c.completedIssues || 0;
+              const percentage = totalIssues > 0 ? Math.round((completedIssues / totalIssues) * 100) : 0;
+              return `${c.name} -> ${percentage}% completed`;
+            })
+            .join("\n");
+        }
+
+        logger.info(`Cycle info: ${cycleInfo}`);
+
+        // Get activities for each team member (same logic as team_daily_summary)
+        const teamMemberData = [];
+        const ignoredMembers = ['suhas', 'abhinav'];
+
+        for (const member of members) {
+          const userData = member.member || member.user || member;
+          const memberName =
+            member.display_name ||
+            userData.display_name ||
+            userData.first_name ||
+            userData.email ||
+            "Unknown";
+
+          if (memberName === "Unknown") continue;
+
+          // Skip ignored members
+          if (memberName && typeof memberName === 'string' &&
+            ignoredMembers.some(ignored => memberName.toLowerCase().includes(ignored))) {
+            continue;
+          }
+
+          try {
+            const personActivities = await getTeamActivities(
+              startOfDay,
+              endOfDay,
+              projectIdentifier,
+              memberName
+            );
+
+            const completed = [];
+            const inProgress = [];
+            const workItemStates = new Map();
+            const comments = [];
+
+            for (const activity of personActivities) {
+              const workItemId = activity.workItem;
+              const workItemName = activity.workItemName;
+
+              if (activity.field === "assignees" || activity.field === "assignee") {
+                continue;
+              }
+
+              if (activity.type === "activity" || activity.type === "work_item_snapshot") {
+                const state = activity.newValue || activity.state || "Unknown";
+                const activityTime = new Date(activity.time || activity.updatedAt);
+                const existing = workItemStates.get(workItemId);
+
+                if (!existing || activityTime > new Date(existing.time)) {
+                  workItemStates.set(workItemId, {
+                    id: workItemId,
+                    name: workItemName,
+                    state: state,
+                    time: activity.time || activity.updatedAt,
+                  });
+                }
+              } else if (activity.type === "comment") {
+                const commentText = activity.comment || "";
+                if (commentText.trim().length > 0) {
+                  const truncatedComment = commentText.length > 200
+                    ? commentText.substring(0, 100) + "..."
+                    : commentText;
+
+                  comments.push({
+                    id: workItemId,
+                    name: workItemName,
+                    comment: truncatedComment,
+                    actor: activity.actor,
+                    time: activity.time,
+                  });
+
+                  if (!completed.find((c) => c.id === workItemId)) {
+                    const existing = inProgress.find((c) => c.id === workItemId);
+                    if (!existing) {
+                      inProgress.push({
+                        id: workItemId,
+                        name: workItemName,
+                        state: "In Progress (Updated via comment)",
+                        hasComments: true,
+                      });
+                    }
+                  }
+                }
+              } else if (activity.type === "subitem") {
+                const subState = activity.state || "Unknown";
+                if (matchesStateCategory(subState, "completed")) {
+                  if (!completed.find((c) => c.id === workItemId)) {
+                    completed.push({ id: workItemId, name: workItemName });
+                  }
+                } else {
+                  if (!inProgress.find((c) => c.id === workItemId)) {
+                    inProgress.push({ id: workItemId, name: workItemName, state: subState });
+                  }
+                }
+              }
+            }
+
+            for (const [, workItem] of workItemStates) {
+              if (matchesStateCategory(workItem.state, "completed")) {
+                if (!completed.find((c) => c.id === workItem.id)) {
+                  completed.push({ id: workItem.id, name: workItem.name });
+                }
+              } else {
+                if (!inProgress.find((c) => c.id === workItem.id)) {
+                  inProgress.push({
+                    id: workItem.id,
+                    name: workItem.name,
+                    state: workItem.state,
+                  });
+                }
+              }
+            }
+
+            teamMemberData.push({ name: memberName, completed, inProgress, comments });
+          } catch (memberError) {
+            logger.error(`Error processing member ${memberName}: ${memberError.message}`);
+          }
+        }
+
+        // Skip if no activity
+        if (teamMemberData.length === 0) {
+          noActivityCount++;
+          logger.info(`No activity in project ${projectName}, skipping`);
+          continue;
+        }
+
+        // Format data for AI (same as team_daily_summary)
+        const formattedTeamData = teamMemberData
+          .map((member) => {
+            const completedText = member.completed.length > 0
+              ? member.completed.map((t) => `  • ${t.id}: ${t.name}`).join("\n")
+              : "  None";
+            const inProgressText = member.inProgress.length > 0
+              ? member.inProgress.map((t) => `  • ${t.id}: ${t.name} (${t.state})`).join("\n")
+              : "  None";
+
+            const commentsByTask = {};
+            member.comments?.forEach((comment) => {
+              if (!commentsByTask[comment.id]) {
+                commentsByTask[comment.id] = [];
+              }
+              commentsByTask[comment.id].push(comment.comment);
+            });
+
+            const commentsText = Object.keys(commentsByTask).length > 0
+              ? Object.entries(commentsByTask)
+                .map(([taskId, commentList]) => {
+                  const taskName = member.inProgress.find((t) => t.id === taskId)?.name ||
+                    member.completed.find((t) => t.id === taskId)?.name ||
+                    taskId;
+                  return `  • ${taskId}: ${commentList[0]}`;
+                })
+                .join("\n")
+              : "  None";
+
+            return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}\nCOMMENTS:\n${commentsText}`;
+          })
+          .join("\n\n");
+
+        // Use AI to format summary
+        const systemPrompt = `You are a team work summary formatter. Your ONLY job is to convert structured team work data into readable text using a SPECIFIC format.
+
+STRICT RULES:
+1. ONLY describe activities that are explicitly provided in the data
+2. DO NOT infer intent, mood, or additional context
+3. DO NOT add encouragement, opinions, or commentary
+4. Use clear, professional language
+5. Follow the EXACT output format below
+6. Include comments showing progress updates on tasks
+
+OUTPUT FORMAT:
+
+**PROJECT_NAME**
+CYCLE_NAME -> X% completed
+
+**TEAM_MEMBER_A**
+
+**Tasks/SubTasks Done:**
+• TASK-ID: Task Name
+[or "None" if no completed items]
+
+**Tasks/SubTasks in Progress:**
+• TASK-ID: Task Name (State)
+[or "None" if no in-progress items]
+
+**Comments/Updates:**
+• TASK-ID: Brief comment summary
+[or "None" if no comments]
+
+[Continue for all team members...]
+
+FORMATTING RULES:
+- Project name in bold
+- Cycle info on its own line
+- Team member names in bold
+- Bullet points (•) for tasks
+- Include task ID and name
+- For in-progress, include state in parentheses
+- Separate members with blank lines
+- Include ALL team members provided`;
+
+        const userPrompt = `Format this team daily summary for ${today}.
+PROJECT: ${projectName}
+CYCLE INFO: ${cycleInfo}
+
+TEAM MEMBERS DATA:
+${formattedTeamData}`;
+
+        const result = await generateText({
+          model: google(env.GEMINI_MODEL || "gemini-1.5-flash"),
+          system: systemPrompt,
+          prompt: userPrompt,
+          temperature: env.GEMINI_TEMPERATURE || 0.3,
+        });
+
+        const summary = result.text;
+
+        // Split into chunks if needed (Discord limit 4096)
+        const MAX_LENGTH = 4096;
+        const embeds = [];
+        let remaining = summary;
+
+        while (remaining.length > 0) {
+          let chunk = remaining.substring(0, MAX_LENGTH);
+          if (remaining.length > MAX_LENGTH) {
+            const lastNewline = chunk.lastIndexOf("\n");
+            if (lastNewline > MAX_LENGTH * 0.8) {
+              chunk = remaining.substring(0, lastNewline);
+            }
+          }
+
+          embeds.push({
+            color: 0x5865f2,
+            ...(embeds.length === 0 ? { title: `📊 Team Daily Summary for ${projectName} (${today})` } : {}),
+            description: chunk,
+            footer: { text: `${teamMemberData.length} team members • Page ${embeds.length + 1}` }
+          });
+
+          remaining = remaining.substring(chunk.length);
+        }
+
+        // Send to Discord
+        const sent = await sendMessageToChannel(channelId, discordToken, { embeds });
 
         if (sent) {
           summariesSent++;
-          logger.info(`Successfully sent scheduled summary for ${displayName}`);
-        } else {
-          logger.warn(`Failed to send summary for ${displayName}`);
+          logger.info(`Successfully sent scheduled team summary for ${projectName}`);
         }
 
-        // Step 6: Wait before processing next person to avoid rate limiting and ensure isolation
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait 60 seconds between projects to stay under Plane's 60 req/min rate limit
+        // This ensures we never exceed the rate limit even with multiple API calls per project
+        logger.info(`Waiting 60 seconds before processing next project...`);
+        await new Promise(resolve => setTimeout(resolve, 60000));
 
-      } catch (error) {
-        logger.error(`Error generating scheduled summary for ${displayName}: ${error.message}`);
-        // Continue to next person even if one fails
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (projectError) {
+        logger.error(`Error generating scheduled team summary for project ${project.name}: ${projectError.message}`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
 
-    // Clear caches one final time after all processing
+    // Clear caches after all processing
     clearActivityCaches();
 
-    // Send a footer message with stats
+    // Send footer with stats
     await sendMessageToChannel(channelId, discordToken, {
-      content: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ Sent **${summariesSent}** summaries | ⏸️ **${noActivityCount}** members with no activity`
+      content: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ Sent **${summariesSent}** team summaries | ⏸️ **${noActivityCount}** projects with no activity`
     });
 
-    logger.info(`Scheduled summary complete: ${summariesSent} summaries sent, ${noActivityCount} with no activity`);
+    logger.info(`Scheduled team summary complete: ${summariesSent} summaries sent, ${noActivityCount} with no activity`);
 
   } catch (error) {
-    logger.error(`Error in scheduled summary: ${error.message}`, error);
+    logger.error(`Error in scheduled team summary: ${error.message}`, error);
     await sendMessageToChannel(channelId, discordToken, {
-      content: `❌ **Error generating scheduled daily summaries**\n\n${error.message}`
+      content: `❌ **Error generating scheduled daily team summaries**\n\n${error.message}`
     });
   }
 }

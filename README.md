@@ -26,7 +26,7 @@ A serverless Discord bot that integrates with [Plane](https://plane.so) project 
 
 - [Node.js](https://nodejs.org/) >= 18.0.0
 - [Cloudflare Account](https://dash.cloudflare.com/) with `wrangler` CLI installed
-- A Discord Bot / Application
+- A Discord Bot / Application with a channel for daily summaries
 - A Plane account with API access
 - Google Gemini API key (for summaries)
 
@@ -63,6 +63,9 @@ npx wrangler secret put WORKSPACE_SLUG
 
 # Required for AI Summaries
 npx wrangler secret put GOOGLE_GENERATIVE_AI_API_KEY
+
+# Required for Daily Summaries
+npx wrangler secret put DAILY_SUMMARY_CHANNEL_ID
 ```
 
 Non-sensitive variables are managed in `wrangler.toml`:
@@ -125,6 +128,34 @@ npm run register-commands
 ```
 
 This will register the commands with Discord and make them available in your server.
+
+## Scheduled Daily Summaries
+
+The bot automatically sends detailed daily team summaries to a configured Discord channel:
+
+- **Trigger**: Daily at 8:00 PM IST (2:30 PM UTC)
+- **Content**: Detailed team activity summaries for all active projects (same format as `/team_daily_summary` command)
+- **Channel**: Configured via `DAILY_SUMMARY_CHANNEL_ID` environment variable
+
+### Sample Automated Summary Output:
+```
+📊 Team Summary - Radar (2025-01-07)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Radar
+Sprint 1 -> 75% completed
+
+<avik.mukherjee>
+Tasks/SubTasks Done
+• Implement user authentication
+• Update API documentation
+
+Tasks/SubTasks in Progress
+• Fix mobile responsiveness (In Review)
+• Code review (In Progress)
+```
+
+To enable scheduled summaries, set the `DAILY_SUMMARY_CHANNEL_ID` in your Cloudflare Worker secrets.
 
 ## Project Structure
 
