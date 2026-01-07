@@ -2,10 +2,10 @@
  * State detection patterns (case-insensitive)
  */
 export const STATE_PATTERNS = {
-  completed: ["done", "closed", "complete", "completed", "resolved"],
-  blocked: ["block", "blocked", "blocking", "stuck", "on hold"],
-  inProgress: ["progress", "in progress", "review", "active", "working", "started", "in review", "in qa"],
-  backlog: ["backlog", "todo", "to do", "open", "new", "planned", "none"],
+  completed: ["done", "closed", "complete", "completed", "resolved", "finished", "cancelled", "cancelled"],
+  blocked: ["block", "blocked", "blocking", "stuck", "on hold", "waiting", "pending"],
+  inProgress: ["progress", "in progress", "review", "active", "working", "started", "in review", "in qa", "ready", "doing", "implementing"],
+  backlog: ["backlog", "todo", "to do", "open", "new", "planned", "none", "idea", "draft"],
 };
 
 /**
@@ -35,7 +35,7 @@ export function categorizeWorkItems(workItems) {
   };
 
   for (const item of workItems) {
-    const state = item.state || item.state_detail?.name || "Unknown";
+    const state = item.state?.name || item.state || item.state_detail?.name || "Unknown";
     const stateLower = state.toLowerCase();
 
     if (matchesStateCategory(state, "completed")) {

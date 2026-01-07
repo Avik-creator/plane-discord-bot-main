@@ -7,12 +7,12 @@ let PLANE_API = null;
 
 // Rate limiting and constants
 const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 1000;
+const INITIAL_RETRY_DELAY_MS = 2000; // Increased from 1000 to be more conservative
 const MAX_WORK_ITEMS_PER_PROJECT = 200;
 const MAX_ACTIVITIES_PER_ITEM = 20;
 const REQUEST_TIMEOUT_MS = 45000;
-const MAX_CONCURRENT_ACTIVITY_FETCHES = 5; // Lowered to avoid 429s
-const BATCH_DELAY_MS = 1000; // Delay between batches
+const MAX_CONCURRENT_ACTIVITY_FETCHES = 2; // Reduced from 5 to avoid 429s
+const BATCH_DELAY_MS = 2000; // Increased from 1000 for more conservative rate limiting
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
 
@@ -344,9 +344,12 @@ async function apiRequestWithRetry(requestFn, context = "") {
 
       if (error.response?.status === 429) {
         const retryAfter = error.response.headers["retry-after"];
-        const delayMs = retryAfter
+        const baseDelay = retryAfter
           ? parseInt(retryAfter) * 1000
           : INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+
+        // Add extra delay for more conservative rate limiting
+        const delayMs = Math.max(baseDelay, 3000 + (attempt * 2000));
 
         logger.warn(
           `[429 Rate Limited] ${context}, retry ${attempt + 1
@@ -539,6 +542,43 @@ async function fetchWorkItemActivities(projectId, workItemId) {
 }
 
 /**
+ * Extract current relationships from work item activities
+ * Relationships in Plane are stored as activity history, not as current fields
+ */
+async function fetchWorkItemRelationships(projectId, workItemId) {
+  ensureApi();
+  try {
+    const activities = await getActivitiesWithCache(projectId, workItemId);
+
+    // Relationship fields that can be tracked
+    const relationshipFields = ['relates_to', 'blocks', 'blocked_by', 'depends_on', 'parent'];
+    const currentRelationships = {};
+
+    // Sort activities by creation date (newest first)
+    activities.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    for (const activity of activities) {
+      const field = activity.field;
+      if (relationshipFields.includes(field) && !currentRelationships[field]) {
+        // This is the most recent activity for this relationship field
+        currentRelationships[field] = {
+          value: activity.new_value,
+          updated_at: activity.created_at,
+          updated_by: activity.actor
+        };
+      }
+    }
+
+    return currentRelationships;
+  } catch (error) {
+    logger.warn(
+      `Failed to fetch relationships for ${workItemId}: ${error.message}`
+    );
+    return {};
+  }
+}
+
+/**
  * Get all team activities for a date range
  * Returns structured data ready for summarization
  * @param {Date} startDate - Start of date range
@@ -657,8 +697,9 @@ async function _getTeamActivitiesInternal(
         createdAt,
         updatedAt,
         assignees: assigneeNames,
-        state: workItem.state_detail?.name || workItem.state || "Unknown",
+        state: workItem.state?.name || workItem.state_detail?.name || "Unknown",
         priority: workItem.priority || "none",
+        relationships: {}, // Will be populated later
       });
     }
   }
@@ -672,6 +713,16 @@ async function _getTeamActivitiesInternal(
             task.projectId,
             task.workItemId
           );
+
+          // Also fetch current relationships for this work item
+          const relationships = await fetchWorkItemRelationships(
+            task.projectId,
+            task.workItemId
+          );
+          task.relationships = relationships;
+
+          // Small delay to prevent overwhelming the API
+          await sleep(200);
 
           let foundActivityInRange = false;
 
@@ -711,6 +762,7 @@ async function _getTeamActivitiesInternal(
                 newValue: activity.new_value,
                 verb: activity.verb || "updated",
                 time: activityDate.toISOString(),
+                relationships: task.relationships, // Include current relationships
               });
             }
           }
@@ -721,6 +773,9 @@ async function _getTeamActivitiesInternal(
               task.projectId,
               task.workItemId
             );
+
+            // Small delay after fetching comments
+            await sleep(100);
 
             for (const comment of comments.slice(0, MAX_ACTIVITIES_PER_ITEM)) {
               const commentDate = new Date(comment.created_at);
@@ -751,6 +806,7 @@ async function _getTeamActivitiesInternal(
                     comment.comment_html?.replace(/<[^>]*>/g, "") ||
                     "",
                   time: commentDate.toISOString(),
+                  relationships: task.relationships, // Include current relationships
                 });
               }
             }
@@ -767,6 +823,9 @@ async function _getTeamActivitiesInternal(
               task.workItemId
             );
 
+            // Small delay after fetching subitems
+            await sleep(100);
+
             if (subitems && subitems.length > 0) {
               for (const subitem of subitems) {
                 // Filter by actor (assignee) if requested (fuzzy name matching)
@@ -780,7 +839,7 @@ async function _getTeamActivitiesInternal(
 
                 const subitemIdentifier = `${task.projectIdentifier}-${subitem.sequence_id}`;
                 const subitemState =
-                  subitem.state_detail?.name || subitem.state || "Unknown";
+                  subitem.state?.name || subitem.state_detail?.name || "Unknown";
                 const subitemPriority = subitem.priority || "none";
                 const subitemProgress = subitem.progress || {};
                 const completionPercentage = subitemProgress.total_issues
@@ -834,6 +893,7 @@ async function _getTeamActivitiesInternal(
                 assignees: task.assignees || [],
                 createdAt: task.createdAt.toISOString(),
                 updatedAt: task.updatedAt.toISOString(),
+                relationships: task.relationships, // Include current relationships
               });
             }
           }
@@ -854,6 +914,7 @@ async function _getTeamActivitiesInternal(
               assignees: task.assignees || [],
               createdAt: task.createdAt.toISOString(),
               updatedAt: task.updatedAt.toISOString(),
+              relationships: task.relationships, // Include current relationships
             });
           }
         }
@@ -891,7 +952,7 @@ async function getWorkItemsSnapshot() {
         id: `${projectIdentifier}-${workItem.sequence_id}`,
         name: workItem.name,
         project: projectIdentifier,
-        state: workItem.state_detail?.name || workItem.state || "Unknown",
+        state: workItem.state?.name || workItem.state_detail?.name || "Unknown",
         priority: workItem.priority || "none",
         assignees:
           workItem.assignee_details?.map((a) => a.display_name || a.email) ||
@@ -1196,6 +1257,7 @@ export {
   getCommentsWithCache,
   fetchWorkItemSubitems,
   getSubitemsWithCache,
+  fetchWorkItemRelationships,
   getTeamActivities,
   getWorkItemsSnapshot,
   getWorkspaceMembers,

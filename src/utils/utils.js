@@ -41,8 +41,8 @@ const formatState = (state, group) => {
 
 const getIssueColor = (issue) => {
   // First try to use state color
-  if (issue.state_detail?.color) {
-    return parseInt(issue.state_detail.color.replace("#", ""), 16);
+  if (issue.state?.color) {
+    return parseInt(issue.state.color.replace("#", ""), 16);
   }
   // Fallback to priority color
   return getPriorityColor(issue.priority);

@@ -160,7 +160,7 @@ async function processMemberActivities(member, startOfDay, endOfDay, projectIden
     // Continue processing even if no activities for this date
     logger.info(`Member ${memberName}: ${personActivities.length} activities on ${dateKey}`);
 
-    const { completed, inProgress, comments } = processActivities(personActivities);
+    const { completed, inProgress, todo, comments } = processActivities(personActivities);
 
     // Log comment count for debugging
     if (comments.length > 0) {
@@ -168,7 +168,7 @@ async function processMemberActivities(member, startOfDay, endOfDay, projectIden
     }
 
     // Add all members to the summary, even if they have no activity
-    return { name: memberName, completed, inProgress, comments };
+    return { name: memberName, completed, inProgress, todo, comments };
 
   } catch (error) {
     logger.warn(`Error fetching activities for ${memberName}: ${error.message}`);
@@ -179,17 +179,30 @@ async function processMemberActivities(member, startOfDay, endOfDay, projectIden
 /**
  * Process raw activities into categorized data
  * @param {Array} activities - Raw activities from API
- * @returns {Object} Categorized activities { completed: [], inProgress: [], comments: [] }
+ * @returns {Object} Categorized activities { completed: [], inProgress: [], todo: [], comments: [] }
  */
 function processActivities(activities) {
   const completed = [];
   const inProgress = [];
+  const todo = [];
   const workItemStates = new Map();
+  const workItemRelationships = new Map();
   const comments = []; // Store comments for progress tracking
 
   for (const activity of activities) {
     const workItemId = activity.workItem;
     const workItemName = activity.workItemName;
+
+    // Store relationship data for each work item
+    if (activity.relationships) {
+      if (!workItemRelationships.has(workItemId)) {
+        workItemRelationships.set(workItemId, activity.relationships);
+      } else {
+        // Merge relationships, keeping the most recent ones
+        const existing = workItemRelationships.get(workItemId);
+        workItemRelationships.set(workItemId, { ...existing, ...activity.relationships });
+      }
+    }
 
     if (activity.field === "assignees" || activity.field === "assignee") {
       logger.debug(`Skipping assignment-only activity for ${workItemId}`);
@@ -207,6 +220,7 @@ function processActivities(activities) {
           name: workItemName,
           state: state,
           time: activity.time || activity.updatedAt,
+          relationships: activity.relationships,
         });
       }
     } else if (activity.type === "comment") {
@@ -226,6 +240,7 @@ function processActivities(activities) {
           comment: truncatedComment,
           actor: activity.actor,
           time: activity.time,
+          relationships: activity.relationships,
         });
 
         // Track work item with comment as in-progress (unless already marked as completed)
@@ -237,6 +252,7 @@ function processActivities(activities) {
               name: workItemName,
               state: "In Progress (Updated via comment)",
               hasComments: true,
+              relationships: activity.relationships,
             });
           }
         }
@@ -245,46 +261,71 @@ function processActivities(activities) {
       const subState = activity.state || "Unknown";
       if (matchesStateCategory(subState, "completed")) {
         if (!completed.find((c) => c.id === workItemId)) {
-          completed.push({ id: workItemId, name: workItemName });
+          completed.push({
+            id: workItemId,
+            name: workItemName,
+            relationships: activity.relationships
+          });
         }
       } else {
         if (!inProgress.find((c) => c.id === workItemId)) {
-          inProgress.push({ id: workItemId, name: workItemName, state: subState });
+          inProgress.push({
+            id: workItemId,
+            name: workItemName,
+            state: subState,
+            relationships: activity.relationships
+          });
         }
       }
     }
   }
 
-  // Process work item states
+  // Process work item states into three categories: done, inprogress, todo
   for (const [, workItem] of workItemStates) {
+    const relationships = workItemRelationships.get(workItem.id) || workItem.relationships || {};
+
     if (matchesStateCategory(workItem.state, "completed")) {
       if (!completed.find((c) => c.id === workItem.id)) {
-        completed.push({ id: workItem.id, name: workItem.name });
+        completed.push({
+          id: workItem.id,
+          name: workItem.name,
+          relationships: relationships
+        });
       }
-    } else {
-      // Normalize state display for better readability
-      let displayState = workItem.state;
-      if (matchesStateCategory(workItem.state, "blocked")) {
-        displayState = "Blocked";
-      } else if (matchesStateCategory(workItem.state, "backlog")) {
-        displayState = "Backlog";
-      } else if (matchesStateCategory(workItem.state, "inProgress")) {
-        displayState = workItem.state; // Keep original in-progress states
-      } else {
-        displayState = "Backlog"; // Default unknown states to Backlog
-      }
-
+    } else if (matchesStateCategory(workItem.state, "inProgress")) {
       if (!inProgress.find((c) => c.id === workItem.id)) {
         inProgress.push({
           id: workItem.id,
           name: workItem.name,
+          state: workItem.state,
+          relationships: relationships
+        });
+      }
+    } else {
+      // Everything else goes to todo (backlog, blocked, unknown states)
+      if (!todo.find((c) => c.id === workItem.id) &&
+        !completed.find((c) => c.id === workItem.id) &&
+        !inProgress.find((c) => c.id === workItem.id)) {
+        let displayState = workItem.state;
+        if (matchesStateCategory(workItem.state, "blocked")) {
+          displayState = "Blocked";
+        } else if (matchesStateCategory(workItem.state, "backlog")) {
+          displayState = "Todo";
+        } else {
+          displayState = "Todo"; // Default unknown states to Todo
+        }
+
+        todo.push({
+          id: workItem.id,
+          name: workItem.name,
           state: displayState,
+          relationships: relationships
         });
       }
     }
   }
 
-  return { completed, inProgress, comments };
+  return { completed, inProgress, todo, comments };
 }
 
 /**
@@ -296,10 +337,24 @@ export function formatTeamDataForAI(teamMemberData) {
   return teamMemberData
     .map((member) => {
       const completedText = member.completed.length > 0
-        ? member.completed.map((t) => `  • ${t.id}: ${t.name}`).join("\n")
+        ? member.completed.map((t) => {
+          const relText = formatRelationships(t.relationships);
+          return `  • ${t.id}: ${t.name}${relText}`;
+        }).join("\n")
         : "  None";
+
       const inProgressText = member.inProgress.length > 0
-        ? member.inProgress.map((t) => `  • ${t.id}: ${t.name} (${t.state})`).join("\n")
+        ? member.inProgress.map((t) => {
+          const relText = formatRelationships(t.relationships);
+          return `  • ${t.id}: ${t.name} (${t.state})${relText}`;
+        }).join("\n")
+        : "  None";
+
+      const todoText = member.todo?.length > 0
+        ? member.todo.map((t) => {
+          const relText = formatRelationships(t.relationships);
+          return `  • ${t.id}: ${t.name} (${t.state})${relText}`;
+        }).join("\n")
         : "  None";
 
       // Format comments - extract unique comments by task
@@ -314,17 +369,39 @@ export function formatTeamDataForAI(teamMemberData) {
       const commentsText = Object.keys(commentsByTask).length > 0
         ? Object.entries(commentsByTask)
           .map(([taskId, commentList]) => {
-            const taskName = member.inProgress.find((t) => t.id === taskId)?.name ||
-              member.completed.find((t) => t.id === taskId)?.name ||
-              taskId;
-            return `  • ${taskId}: ${commentList[0]}`; // Use first comment as summary
+            const task = member.inProgress.find((t) => t.id === taskId) ||
+              member.completed.find((t) => t.id === taskId) ||
+              member.todo?.find((t) => t.id === taskId);
+            const taskName = task?.name || taskId;
+            const relText = task?.relationships ? formatRelationships(task.relationships) : "";
+            return `  • ${taskId}: ${commentList[0]}${relText}`; // Use first comment as summary
           })
           .join("\n")
         : "  None";
 
-      return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}\nCOMMENTS:\n${commentsText}`;
+      return `MEMBER: ${member.name}\nCOMPLETED:\n${completedText}\nIN_PROGRESS:\n${inProgressText}\nTODO:\n${todoText}\nCOMMENTS:\n${commentsText}`;
     })
     .join("\n\n");
+}
+
+/**
+ * Format relationship information for display
+ * @param {Object} relationships - Relationship object
+ * @returns {string} Formatted relationship text
+ */
+function formatRelationships(relationships) {
+  if (!relationships || Object.keys(relationships).length === 0) {
+    return "";
+  }
+
+  const relParts = [];
+  Object.entries(relationships).forEach(([type, data]) => {
+    if (data && data.value) {
+      relParts.push(`${type}: ${data.value}`);
+    }
+  });
+
+  return relParts.length > 0 ? ` [${relParts.join(", ")}]` : "";
 }
 
 /**
@@ -346,6 +423,8 @@ STRICT RULES:
 4. Use clear, professional language
 5. Follow the EXACT output format below
 6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
+7. Include relationship information ONLY when it appears in brackets after task names (e.g., relates_to: SLMRA-35)
+8. DO NOT add relationship brackets if no relationship information is provided
 
 OUTPUT FORMAT:
 
@@ -356,14 +435,22 @@ CYCLE_NAME -> X% completed
 
 **Tasks/SubTasks Done:**
 • TASK-ID: Task Name
+• TASK-ID: Task Name [relates_to: SLMRA-35]
 [or "None" if no completed items]
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
+• TASK-ID: Task Name (State) [relates_to: SLMRA-35]
 [or "None" if no in-progress items]
+
+**Tasks/SubTasks Todo:**
+• TASK-ID: Task Name (State)
+• TASK-ID: Task Name (State) [relates_to: SLMRA-35]
+[or "None" if no todo items]
 
 **Comments/Updates:**
 • TASK-ID: Brief comment summary
+• TASK-ID: Brief comment summary [relates_to: SLMRA-35]
 [or "None" if no comments]
 
 **TEAM_MEMBER_B**
@@ -382,7 +469,7 @@ ${formattedTeamData}`;
 
   const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY });
   const result = await generateText({
-    model: google(env.GEMINI_MODEL || "gemini-1.5-flash"),
+    model: google(env.GEMINI_MODEL || "gemini-2.5-flash"),
     system: systemPrompt,
     prompt: userPrompt,
     temperature: env.GEMINI_TEMPERATURE || 0.3,
