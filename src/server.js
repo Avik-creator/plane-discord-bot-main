@@ -247,6 +247,9 @@ async function processTeamDailySummary(interaction, env) {
     const teamMemberData = [];
     logger.info(`Processing ${members.length} team members for activities on ${dateKey}`);
     
+    // Members to ignore in team summaries
+    const ignoredMembers = ['suhas', 'abhinav'];
+    
     for (const member of members) {
       const userData = member.member || member.user || member;
       const memberName =
@@ -258,6 +261,12 @@ async function processTeamDailySummary(interaction, env) {
 
       if (memberName === "Unknown") {
         logger.warn(`Skipping member with Unknown name`);
+        continue;
+      }
+
+      // Skip ignored members
+      if (ignoredMembers.some(ignored => memberName.toLowerCase().includes(ignored))) {
+        logger.info(`Skipping ignored member: ${memberName}`);
         continue;
       }
 
