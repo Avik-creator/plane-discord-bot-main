@@ -1,4 +1,4 @@
-import { fetchProjects, initPlaneService, clearActivityCaches } from '../services/planeApiDirect.js';
+import { fetchProjects, initPlaneService, clearActivityCaches, startProjectSession } from '../services/planeApiDirect.js';
 import {
   processTeamActivities,
   formatTeamDataForAI,
@@ -71,14 +71,18 @@ export async function handleScheduled(event, env, ctx) {
     // Process each project SEQUENTIALLY to avoid data mixing
     for (const project of projects) {
       try {
-        // Clear activity caches before each project to ensure fresh, isolated data
-        clearActivityCaches();
-
         const projectId = project.id;
         const projectName = project.name;
         const projectIdentifier = project.identifier;
 
         logger.info(`Processing scheduled team summary for project: ${projectName}`);
+
+        // Start a new caching session for this project
+        // This ensures fresh data is fetched once, then cached for all subsequent requests within this project
+        startProjectSession(projectId);
+
+        // Clear old activity caches before starting new session
+        clearActivityCaches();
 
         // Parse date for activity filtering
         const startOfDay = new Date(istDate);

@@ -7,12 +7,12 @@ let PLANE_API = null;
 
 // Rate limiting and constants
 const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 2000; // Increased from 1000 to be more conservative
+const INITIAL_RETRY_DELAY_MS = 20000; // 20 seconds
 const MAX_WORK_ITEMS_PER_PROJECT = 200;
 const MAX_ACTIVITIES_PER_ITEM = 20;
 const REQUEST_TIMEOUT_MS = 45000;
 const MAX_CONCURRENT_ACTIVITY_FETCHES = 2; // Reduced from 5 to avoid 429s
-const BATCH_DELAY_MS = 2000; // Increased from 1000 for more conservative rate limiting
+const BATCH_DELAY_MS = 20000; // 20 seconds
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
 
@@ -48,25 +48,29 @@ let projectsCacheTime = null;
 let workspaceDetailsCache = null;
 let usersCache = new Map(); // Map of userId -> user details
 
-// Work items cache: Map of projectId -> { data: items[], timestamp: number }
-const WORK_ITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// Work items cache: Map of projectId -> { data: items[], timestamp: number, sessionId: string }
+const WORK_ITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes per session
 let workItemsCache = new Map();
 
-// Activities cache: Map of workItemId -> { data: activities[], timestamp: number }
-const ACTIVITIES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// Activities cache: Map of workItemId -> { data: activities[], timestamp: number, sessionId: string }
+const ACTIVITIES_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes per session
 let activitiesCache = new Map();
 
-// Comments cache: Map of workItemId -> { data: comments[], timestamp: number }
-const COMMENTS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// Comments cache: Map of workItemId -> { data: comments[], timestamp: number, sessionId: string }
+const COMMENTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes per session
 let commentsCache = new Map();
 
-// Subitems cache: Map of workItemId -> { data: subitems[], timestamp: number }
-const SUBITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// Subitems cache: Map of workItemId -> { data: subitems[], timestamp: number, sessionId: string }
+const SUBITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes per session
 let subitemsCache = new Map();
 
-// Cycles cache: Map of projectId -> { data: cycles[], timestamp: number }
-const CYCLES_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Cycles cache: Map of projectId -> { data: cycles[], timestamp: number, sessionId: string }
+const CYCLES_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes per session
 let cyclesCache = new Map();
+
+// Session tracking for per-project caching
+let currentSessionId = null;
+let sessionStartTime = null;
 
 // Request deduplication: Map of key -> Promise to avoid duplicate API calls
 const pendingRequests = new Map();
@@ -98,6 +102,36 @@ function namesMatch(name1, name2) {
  */
 function isCacheValid(timestamp, ttl) {
   return timestamp && Date.now() - timestamp < ttl;
+}
+
+/**
+ * Start a new caching session for a project
+ * This ensures fresh data is fetched for the first request in a session,
+ * then cached for subsequent requests within the same session
+ * @param {string} projectId - Project ID to start session for
+ */
+function startProjectSession(projectId) {
+  const sessionId = `${projectId}_${Date.now()}`;
+  currentSessionId = sessionId;
+  sessionStartTime = Date.now();
+  logger.debug(`🔄 Started new cache session: ${sessionId}`);
+  return sessionId;
+}
+
+/**
+ * Check if cache entry belongs to current session
+ */
+function isInCurrentSession(cacheEntry) {
+  if (!currentSessionId || !cacheEntry) return false;
+  return cacheEntry.sessionId === currentSessionId;
+}
+
+/**
+ * Clear caches for a specific project (useful between different operations)
+ */
+function clearProjectCache(projectId) {
+  workItemsCache.delete(projectId);
+  logger.debug(`🗑️ Cleared cache for project ${projectId}`);
 }
 
 /**
@@ -641,6 +675,10 @@ async function _getTeamActivitiesInternal(
     const projectId = project.id;
     const projectIdentifier = project.identifier || project.name;
 
+    // Start a new caching session for this project
+    // This ensures fresh data is fetched once, then cached for all subsequent requests
+    startProjectSession(projectId);
+
     // Fetch work items for this project
     let workItems;
     try {
@@ -722,7 +760,7 @@ async function _getTeamActivitiesInternal(
           task.relationships = relationships;
 
           // Small delay to prevent overwhelming the API
-          await sleep(200);
+          await sleep(2000);
 
           let foundActivityInRange = false;
 
@@ -762,6 +800,7 @@ async function _getTeamActivitiesInternal(
                 newValue: activity.new_value,
                 verb: activity.verb || "updated",
                 time: activityDate.toISOString(),
+                state: task.state || "Unknown", // Include current state of work item
                 relationships: task.relationships, // Include current relationships
               });
             }
@@ -775,7 +814,7 @@ async function _getTeamActivitiesInternal(
             );
 
             // Small delay after fetching comments
-            await sleep(100);
+            await sleep(2000);
 
             for (const comment of comments.slice(0, MAX_ACTIVITIES_PER_ITEM)) {
               const commentDate = new Date(comment.created_at);
@@ -806,6 +845,7 @@ async function _getTeamActivitiesInternal(
                     comment.comment_html?.replace(/<[^>]*>/g, "") ||
                     "",
                   time: commentDate.toISOString(),
+                  state: task.state || "Unknown", // Include current state of work item
                   relationships: task.relationships, // Include current relationships
                 });
               }
@@ -824,7 +864,7 @@ async function _getTeamActivitiesInternal(
             );
 
             // Small delay after fetching subitems
-            await sleep(100);
+            await sleep(2000);
 
             if (subitems && subitems.length > 0) {
               for (const subitem of subitems) {
@@ -1037,13 +1077,13 @@ async function fetchCycles(projectId) {
  * @param {string} projectId - Project ID
  * @returns {Promise<Array>} Work items for the project
  */
-async function getWorkItemsWithCache(projectId) {
+async function getWorkItemsWithCache(projectId, forceRefresh = false) {
   const cacheKey = `workItems:${projectId}`;
   const cacheEntry = workItemsCache.get(projectId);
 
-  // Return from cache if valid
-  if (cacheEntry && isCacheValid(cacheEntry.timestamp, WORK_ITEMS_CACHE_TTL_MS)) {
-    logger.info(`✓ Using cached work items for project ${projectId}`);
+  // Return from cache if valid AND in current session
+  if (!forceRefresh && cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, WORK_ITEMS_CACHE_TTL_MS)) {
+    logger.info(`✓ Using cached work items for project ${projectId} (session: ${cacheEntry.sessionId})`);
     return cacheEntry.data;
   }
 
@@ -1059,9 +1099,11 @@ async function getWorkItemsWithCache(projectId) {
       logger.info(`📡 Fetching fresh work items for project ${projectId}`);
       const workItems = await fetchWorkItems(projectId);
 
+      // Store with current session ID
       workItemsCache.set(projectId, {
         data: workItems,
         timestamp: Date.now(),
+        sessionId: currentSessionId,
       });
 
       return workItems;
@@ -1084,7 +1126,8 @@ async function getActivitiesWithCache(projectId, workItemId) {
   const cacheKey = `activities:${workItemId}`;
   const cacheEntry = activitiesCache.get(workItemId);
 
-  if (cacheEntry && isCacheValid(cacheEntry.timestamp, ACTIVITIES_CACHE_TTL_MS)) {
+  // Return from cache if valid AND in current session
+  if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, ACTIVITIES_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached activities for work item ${workItemId}`);
     return cacheEntry.data;
   }
@@ -1099,9 +1142,11 @@ async function getActivitiesWithCache(projectId, workItemId) {
       logger.info(`📡 Fetching fresh activities for work item ${workItemId}`);
       const activities = await fetchWorkItemActivities(projectId, workItemId);
 
+      // Store with current session ID
       activitiesCache.set(workItemId, {
         data: activities,
         timestamp: Date.now(),
+        sessionId: currentSessionId,
       });
 
       return activities;
@@ -1124,7 +1169,8 @@ async function getCommentsWithCache(projectId, workItemId) {
   const cacheKey = `comments:${workItemId}`;
   const cacheEntry = commentsCache.get(workItemId);
 
-  if (cacheEntry && isCacheValid(cacheEntry.timestamp, COMMENTS_CACHE_TTL_MS)) {
+  // Return from cache if valid AND in current session
+  if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, COMMENTS_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached comments for work item ${workItemId}`);
     return cacheEntry.data;
   }
@@ -1139,9 +1185,11 @@ async function getCommentsWithCache(projectId, workItemId) {
       logger.info(`📡 Fetching fresh comments for work item ${workItemId}`);
       const comments = await fetchWorkItemComments(projectId, workItemId);
 
+      // Store with current session ID
       commentsCache.set(workItemId, {
         data: comments,
         timestamp: Date.now(),
+        sessionId: currentSessionId,
       });
 
       return comments;
@@ -1164,7 +1212,8 @@ async function getSubitemsWithCache(projectId, workItemId) {
   const cacheKey = `subitems:${workItemId}`;
   const cacheEntry = subitemsCache.get(workItemId);
 
-  if (cacheEntry && isCacheValid(cacheEntry.timestamp, SUBITEMS_CACHE_TTL_MS)) {
+  // Return from cache if valid AND in current session
+  if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, SUBITEMS_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached subitems for work item ${workItemId}`);
     return cacheEntry.data;
   }
@@ -1179,9 +1228,11 @@ async function getSubitemsWithCache(projectId, workItemId) {
       logger.info(`📡 Fetching fresh subitems for work item ${workItemId}`);
       const subitems = await fetchWorkItemSubitems(projectId, workItemId);
 
+      // Store with current session ID
       subitemsCache.set(workItemId, {
         data: subitems,
         timestamp: Date.now(),
+        sessionId: currentSessionId,
       });
 
       return subitems;
@@ -1203,7 +1254,8 @@ async function getCyclesWithCache(projectId) {
   const cacheKey = `cycles:${projectId}`;
   const cacheEntry = cyclesCache.get(projectId);
 
-  if (cacheEntry && isCacheValid(cacheEntry.timestamp, CYCLES_CACHE_TTL_MS)) {
+  // Return from cache if valid AND in current session
+  if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, CYCLES_CACHE_TTL_MS)) {
     logger.info(`✓ Using cached cycles for project ${projectId}`);
     return cacheEntry.data;
   }
@@ -1218,9 +1270,11 @@ async function getCyclesWithCache(projectId) {
       logger.info(`📡 Fetching fresh cycles for project ${projectId}`);
       const cycles = await fetchCycles(projectId);
 
+      // Store with current session ID
       cyclesCache.set(projectId, {
         data: cycles,
         timestamp: Date.now(),
+        sessionId: currentSessionId,
       });
 
       return cycles;
@@ -1267,4 +1321,6 @@ export {
   fetchCycles,
   getCyclesWithCache,
   clearActivityCaches,
+  startProjectSession,
+  clearProjectCache,
 };

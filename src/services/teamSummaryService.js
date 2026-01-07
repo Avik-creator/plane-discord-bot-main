@@ -210,7 +210,13 @@ function processActivities(activities) {
     }
 
     if (activity.type === "activity" || activity.type === "work_item_snapshot") {
-      const state = activity.newValue || activity.state || "Unknown";
+      // For state changes: use newValue (the new state from the activity)
+      // For other field changes: use state (the current state of the work item)
+      // This ensures we always capture the correct state
+      const state = (activity.field === "state" || activity.field === "status")
+        ? (activity.newValue || activity.state || "Unknown")
+        : (activity.state || activity.newValue || "Unknown");
+
       const activityTime = new Date(activity.time || activity.updatedAt);
       const existing = workItemStates.get(workItemId);
 
@@ -243,18 +249,20 @@ function processActivities(activities) {
           relationships: activity.relationships,
         });
 
-        // Track work item with comment as in-progress (unless already marked as completed)
-        if (!completed.find((c) => c.id === workItemId)) {
-          const existing = inProgress.find((c) => c.id === workItemId);
-          if (!existing) {
-            inProgress.push({
-              id: workItemId,
-              name: workItemName,
-              state: "In Progress (Updated via comment)",
-              hasComments: true,
-              relationships: activity.relationships,
-            });
-          }
+        // Update work item state based on current state (from activity.state)
+        const currentState = activity.state || "Unknown";
+        const activityTime = new Date(activity.time);
+        const existing = workItemStates.get(workItemId);
+
+        // Update state if this is the most recent activity
+        if (!existing || activityTime > new Date(existing.time)) {
+          workItemStates.set(workItemId, {
+            id: workItemId,
+            name: workItemName,
+            state: currentState,
+            time: activity.time,
+            relationships: activity.relationships,
+          });
         }
       }
     } else if (activity.type === "subitem") {

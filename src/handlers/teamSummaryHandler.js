@@ -1,4 +1,4 @@
-import { fetchProjects } from '../services/planeApiDirect.js';
+import { fetchProjects, startProjectSession, clearActivityCaches } from '../services/planeApiDirect.js';
 import {
   processTeamActivities,
   formatTeamDataForAI,
@@ -72,6 +72,11 @@ export async function handleTeamDailySummary(interaction, env) {
 
     const projectId = selectedProject.id;
     const projectName = selectedProject.name;
+
+    // Start a new caching session for this project
+    // This ensures fresh data is fetched once, then cached for all subsequent requests
+    startProjectSession(projectId);
+    clearActivityCaches(); // Clear any old cached data
 
     // Process team activities using the shared service
     const { teamMemberData, cycleInfo } = await processTeamActivities(
