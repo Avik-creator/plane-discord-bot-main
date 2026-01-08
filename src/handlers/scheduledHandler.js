@@ -215,14 +215,14 @@ ${formattedTeamData}`;
           logger.info(`Successfully sent scheduled team summary for ${projectName}`);
         }
 
-        // Wait 60 seconds between projects to stay under Plane's 60 req/min rate limit
+        // Wait 30 seconds between projects to stay under Plane's 60 req/min rate limit
         // This ensures we never exceed the rate limit even with multiple API calls per project
-        logger.info(`Waiting 60 seconds before processing next project...`);
-        await new Promise(resolve => setTimeout(resolve, 60000));
+        logger.info(`Waiting 30 seconds before processing next project...`);
+        await new Promise(resolve => setTimeout(resolve, 30000));
 
       } catch (projectError) {
         logger.error(`Error generating scheduled team summary for project ${project.name}: ${projectError.message}`);
-        await new Promise(resolve => setTimeout(resolve, 60000));
+        await new Promise(resolve => setTimeout(resolve, 30000));
       }
     }
 
