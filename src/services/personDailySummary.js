@@ -326,7 +326,7 @@ export async function generatePersonDailySummaryText(summary, env = {}) {
     return `No activity recorded for ${summary.person} on ${summary.date}.`;
   }
 
-  const modelName = env.GEMINI_MODEL || "gemini-1.5-flash";
+  const modelName = env.GEMINI_MODEL || "gemini-2.5-flash";
   const apiKey = env.GOOGLE_GENERATIVE_AI_API_KEY;
 
   try {

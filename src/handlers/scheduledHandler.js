@@ -190,13 +190,19 @@ TEAM MEMBERS DATA:
 ${formattedTeamData}`;
 
         const result = await generateText({
-          model: google(env.GEMINI_MODEL || "gemini-1.5-flash"),
+          model: google(env.GEMINI_MODEL || "gemini-2.5-flash"),
           system: systemPrompt,
           prompt: userPrompt,
           temperature: env.GEMINI_TEMPERATURE || 0.3,
         });
 
         const summary = result.text;
+
+        if (summariesSent > 0) {
+          await sendMessageToChannel(channelId, discordToken, {
+            content: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n📊 **${projectName}** Summary\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+          });
+        }
 
         // Create and send embeds
         const embedPayload = createTeamSummaryEmbed(projectName, today, summary, teamMemberData.length);
