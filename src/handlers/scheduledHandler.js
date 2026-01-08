@@ -217,12 +217,12 @@ ${formattedTeamData}`;
 
         // Wait 60 seconds between projects to stay under Plane's 60 req/min rate limit
         // This ensures we never exceed the rate limit even with multiple API calls per project
-        logger.info(`Waiting 120 seconds before processing next project...`);
-        await new Promise(resolve => setTimeout(resolve, 120000));
+        logger.info(`Waiting 60 seconds before processing next project...`);
+        await new Promise(resolve => setTimeout(resolve, 60000));
 
       } catch (projectError) {
         logger.error(`Error generating scheduled team summary for project ${project.name}: ${projectError.message}`);
-        await new Promise(resolve => setTimeout(resolve, 12000));
+        await new Promise(resolve => setTimeout(resolve, 60000));
       }
     }
 

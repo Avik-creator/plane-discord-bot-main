@@ -760,7 +760,7 @@ async function _getTeamActivitiesInternal(
           task.relationships = relationships;
 
           // Small delay to prevent overwhelming the API
-          await sleep(2000);
+          await sleep(200);
 
           let foundActivityInRange = false;
 
@@ -814,7 +814,7 @@ async function _getTeamActivitiesInternal(
             );
 
             // Small delay after fetching comments
-            await sleep(2000);
+            await sleep(200);
 
             for (const comment of comments.slice(0, MAX_ACTIVITIES_PER_ITEM)) {
               const commentDate = new Date(comment.created_at);
@@ -864,7 +864,7 @@ async function _getTeamActivitiesInternal(
             );
 
             // Small delay after fetching subitems
-            await sleep(2000);
+            await sleep(200);
 
             if (subitems && subitems.length > 0) {
               for (const subitem of subitems) {
