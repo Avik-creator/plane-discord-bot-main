@@ -444,23 +444,20 @@ CYCLE_NAME -> X% completed
 
 **Tasks/SubTasks Done:**
 • TASK-ID: Task Name
-• TASK-ID: Task Name [relates_to: SLMRA-35]
-[or "None" if no completed items]
+• TASK-ID: Task Name [relates_to: TASK-ID]
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
-• TASK-ID: Task Name (State) [relates_to: SLMRA-35]
-[or "None" if no in-progress items]
+• TASK-ID: Task Name (State) [relates_to: TASK-ID]
 
 **Tasks/SubTasks Todo:**
 • TASK-ID: Task Name (State)
-• TASK-ID: Task Name (State) [relates_to: SLMRA-35]
-[or "None" if no todo items]
+• TASK-ID: Task Name (State) [relates_to: TASK-ID]
+
 
 **Comments/Updates:**
 • TASK-ID: Brief comment summary
-• TASK-ID: Brief comment summary [relates_to: SLMRA-35]
-[or "None" if no comments]
+• TASK-ID: Brief comment summary [relates_to: TASK-ID]
 
 **TEAM_MEMBER_B**
 
