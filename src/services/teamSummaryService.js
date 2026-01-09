@@ -432,7 +432,8 @@ STRICT RULES:
 5. Follow the EXACT output format below
 6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
 7. Include relationship information ONLY when it appears in brackets after task names (e.g., relates_to: SLMRA-35)
-8. DO NOT add relationship brackets if no relationship information is provided
+8. If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, No need to include them.
+9. DO NOT add relationship brackets if no relationship information is provided
 
 OUTPUT FORMAT:
 

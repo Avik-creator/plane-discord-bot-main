@@ -171,24 +171,14 @@ FORMATTING RULES:
 - For in-progress items, include the state in parentheses
 - For todo items, include the state in parentheses
 - For comments, include the task ID and a brief summary of the update
-- If a member has no completed tasks, show "None" under Done
-- If a member has no in-progress tasks, show "None" under In Progress
-- If a member has no todo items, show "None" under Todo
-- If a member has no comments, show "None" under Comments/Updates
+- If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, No need to include them.
 - Separate team members with blank lines
-- Include ALL team members provided, even those with no activity
-
-If no team members have activities, respond with: "No team activity found for this period."
-
-CRITICAL: You MUST include ALL team members in the output, even those with no completed, in-progress, or comment activities.`;
-
+- Include ALL team members provided, even those with no activity`;
         const userPrompt = `Format this team daily summary for ${today} using the exact format specified. Include comments as they show progress on tasks even when there are no formal state changes.
 PROJECT: ${projectName}
 CYCLE INFO: ${cycleInfo}
-
 TEAM MEMBERS DATA:
 ${formattedTeamData}`;
-
         const result = await generateText({
           model: google(env.GEMINI_MODEL || "gemini-2.5-flash"),
           system: systemPrompt,
