@@ -113,10 +113,11 @@ async function handleProjectAutocomplete(query) {
       const identifierMatch = p.identifier?.toLowerCase().includes(focusedValue);
       return nameMatch || identifierMatch;
     })
+    .filter(p => p.identifier || p.id) // Ensure we have a value for autocomplete
     .slice(0, 25)
     .map(p => ({
       name: `${p.name || "Unknown"} (${p.identifier || "no-id"})`.substring(0, 100),
-      value: p.identifier || p.id
+      value: String(p.identifier || p.id)
     }));
 
   logger.debug(`Returning ${filtered.length} filtered projects`);

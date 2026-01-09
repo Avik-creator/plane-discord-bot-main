@@ -11,7 +11,7 @@ const INITIAL_RETRY_DELAY_MS = 20000; // 20 seconds
 const MAX_WORK_ITEMS_PER_PROJECT = 200;
 const MAX_ACTIVITIES_PER_ITEM = 20;
 const REQUEST_TIMEOUT_MS = 45000;
-const MAX_CONCURRENT_ACTIVITY_FETCHES = 4; // Reduced from 5 to avoid 429s
+const MAX_CONCURRENT_ACTIVITY_FETCHES = 2; // Reduced from 5 to avoid 429s
 const BATCH_DELAY_MS = 20000; // 20 seconds
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
@@ -480,6 +480,11 @@ async function fetchProjects() {
   logger.info(
     `Fetched ${projects.length} projects total after ${iteration} iterations`
   );
+
+  // Cache the results
+  projectsCache = projects;
+  projectsCacheTime = Date.now();
+
   return projects;
 }
 
