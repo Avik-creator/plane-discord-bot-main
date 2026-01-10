@@ -10,7 +10,7 @@ GEMINI_TEMPERATURE = 0.3
 
 # Cron trigger for detailed daily team summaries at 8:00 PM IST (2:30 PM UTC) - Every day
 [triggers]
-crons = ["30 14 * * *"]
+crons = ["30 14 * * 1-5"]
 
 # Secrets to be set via 'wrangler secret put':
 # DISCORD_TOKEN
