@@ -377,13 +377,9 @@ function extractMemberIds(members) {
 }
 
 /**
- * Check if a work item is relevant to project members
- * A work item is relevant if it's:
- * 1. Assigned to any project member, OR
- * 2. Created by a project member, OR
- * 3. Updated by a project member
+ * Check if a work item is assigned to any of the specified member IDs
  */
-function isRelevantToMembers(workItem, memberIds) {
+function isAssignedToMembers(workItem, memberIds) {
   // Check assignees array
   if (workItem.assignees && Array.isArray(workItem.assignees)) {
     for (const assigneeId of workItem.assignees) {
@@ -396,16 +392,6 @@ function isRelevantToMembers(workItem, memberIds) {
     for (const assignee of workItem.assignee_details) {
       if (memberIds.has(assignee.id)) return true;
     }
-  }
-
-  // Check if created by a project member
-  if (workItem.created_by && memberIds.has(workItem.created_by)) {
-    return true;
-  }
-
-  // Check if updated by a project member
-  if (workItem.updated_by && memberIds.has(workItem.updated_by)) {
-    return true;
   }
 
   return false;
@@ -820,9 +806,8 @@ async function processProjectActivities(
 
     if (!itemInDateRange) continue;
 
-    // OPTIMIZATION: Only include work items relevant to project members
-    // (assigned to, created by, or updated by project members)
-    if (!isRelevantToMembers(workItem, memberIds)) {
+    // OPTIMIZATION: Only include work items assigned to project members
+    if (!isAssignedToMembers(workItem, memberIds)) {
       continue;
     }
 
