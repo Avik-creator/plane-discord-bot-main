@@ -377,21 +377,23 @@ function extractMemberIds(members) {
 }
 
 /**
- * Check if a work item is assigned to any of the specified member IDs
+ * Check if a work item is assigned to or created by any of the specified member IDs
  */
-function isAssignedToMembers(workItem, memberIds) {
-  // Check assignees array
+function isAssignedToOrCreatedByMembers(workItem, memberIds) {
   if (workItem.assignees && Array.isArray(workItem.assignees)) {
     for (const assigneeId of workItem.assignees) {
       if (memberIds.has(assigneeId)) return true;
     }
   }
 
-  // Check assignee_details array
   if (workItem.assignee_details && Array.isArray(workItem.assignee_details)) {
     for (const assignee of workItem.assignee_details) {
       if (memberIds.has(assignee.id)) return true;
     }
+  }
+
+  if (workItem.created_by && memberIds.has(workItem.created_by)) {
+    return true;
   }
 
   return false;
@@ -806,12 +808,12 @@ async function processProjectActivities(
 
     if (!itemInDateRange) continue;
 
-    // OPTIMIZATION: Only include work items assigned to project members
-    if (!isAssignedToMembers(workItem, memberIds)) {
+    if (!isAssignedToOrCreatedByMembers(workItem, memberIds)) {
       continue;
     }
 
-    // Extract assignee names from the work item
+    const creatorName = workItem.created_by ? await fetchUserName(workItem.created_by) : null;
+
     const assigneeNames = workItem.assignee_details?.map(
       (a) => a.display_name || a.email || "Unassigned"
     ) || [];
@@ -825,6 +827,7 @@ async function processProjectActivities(
       createdAt,
       updatedAt,
       assignees: assigneeNames,
+      createdBy: creatorName,
       state: workItem.state?.name || workItem.state_detail?.name || "Unknown",
       priority: workItem.priority || "none",
       relationships: {},
@@ -979,11 +982,11 @@ async function processProjectActivities(
             }
           }
 
-          // If no activities found, add snapshot ONLY if the actor is assigned to this work item
           if (!foundActivityInRange) {
             const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
+            const isCreator = !actorFilter || (task.createdBy && namesMatch(task.createdBy, actorFilter));
 
-            if (isAssigned) {
+            if (isAssigned || isCreator) {
               activities.push({
                 type: "work_item_snapshot",
                 workItem: task.workItemIdentifier,
@@ -992,6 +995,7 @@ async function processProjectActivities(
                 state: task.state || "Unknown",
                 priority: task.priority || "None",
                 assignees: task.assignees || [],
+                createdBy: task.createdBy,
                 createdAt: task.createdAt.toISOString(),
                 updatedAt: task.updatedAt.toISOString(),
                 relationships: task.relationships,
@@ -1002,9 +1006,9 @@ async function processProjectActivities(
           logger.warn(
             `Error fetching activities for ${task.workItemIdentifier}: ${error.message}`
           );
-          // Add snapshot on error ONLY if the actor is assigned to this work item (fuzzy name matching)
           const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
-          if (isAssigned) {
+          const isCreator = !actorFilter || (task.createdBy && namesMatch(task.createdBy, actorFilter));
+          if (isAssigned || isCreator) {
             activities.push({
               type: "work_item_snapshot",
               workItem: task.workItemIdentifier,
@@ -1013,6 +1017,7 @@ async function processProjectActivities(
               state: task.state || "Unknown",
               priority: task.priority || "None",
               assignees: task.assignees || [],
+              createdBy: task.createdBy,
               createdAt: task.createdAt.toISOString(),
               updatedAt: task.updatedAt.toISOString(),
               relationships: task.relationships,

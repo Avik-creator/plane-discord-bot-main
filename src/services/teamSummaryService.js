@@ -119,14 +119,18 @@ export async function processTeamActivities(projectId, projectName, projectIdent
 
     logger.debug(`Member ${memberName}: ${memberActivities.length} activities (filtered from ${allActivities.length})`);
 
-    const { completed, inProgress, todo, comments } = processActivities(memberActivities);
+    const { completed, inProgress, todo, comments, activityUpdates } = processActivities(memberActivities);
 
     if (comments.length > 0) {
       logger.debug(`Member ${memberName}: Found ${comments.length} comments`);
     }
+    
+    if (activityUpdates.length > 0) {
+      logger.debug(`Member ${memberName}: Found ${activityUpdates.length} activity updates`);
+    }
 
     // Add all members to the summary
-    teamMemberData.push({ name: memberName, completed, inProgress, todo, comments });
+    teamMemberData.push({ name: memberName, completed, inProgress, todo, comments, activityUpdates });
   }
 
   const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -143,6 +147,11 @@ export async function processTeamActivities(projectId, projectName, projectIdent
 /**
  * Filter activities for a specific member from the full list
  * This is done entirely in memory - no API calls!
+ * 
+ * Matches activities where:
+ * 1. Member is the actor (for activities/comments)
+ * 2. Member is in assignees (for work_item_snapshot/subitem)
+ * 3. Member is the creator (for creation activities - verb: "created")
  */
 function filterActivitiesForMember(allActivities, memberName) {
   const memberActivities = [];
@@ -154,9 +163,11 @@ function filterActivitiesForMember(allActivities, memberName) {
         memberActivities.push(activity);
       }
     }
-    // For work_item_snapshot: check if member is in assignees
+    // For work_item_snapshot: check if member is in assignees OR is the creator
     else if (activity.type === "work_item_snapshot") {
-      if (activity.assignees && activity.assignees.some(a => namesMatch(a, memberName))) {
+      const isAssignee = activity.assignees && activity.assignees.some(a => namesMatch(a, memberName));
+      const isCreator = activity.createdBy && namesMatch(activity.createdBy, memberName);
+      if (isAssignee || isCreator) {
         memberActivities.push(activity);
       }
     }
@@ -231,18 +242,17 @@ function processActivities(activities) {
   const todo = [];
   const workItemStates = new Map();
   const workItemRelationships = new Map();
-  const comments = []; // Store comments for progress tracking
+  const comments = [];
+  const activityUpdates = [];
 
   for (const activity of activities) {
     const workItemId = activity.workItem;
     const workItemName = activity.workItemName;
 
-    // Store relationship data for each work item
     if (activity.relationships) {
       if (!workItemRelationships.has(workItemId)) {
         workItemRelationships.set(workItemId, activity.relationships);
       } else {
-        // Merge relationships, keeping the most recent ones
         const existing = workItemRelationships.get(workItemId);
         workItemRelationships.set(workItemId, { ...existing, ...activity.relationships });
       }
@@ -254,10 +264,41 @@ function processActivities(activities) {
     }
 
     if (activity.type === "activity" || activity.type === "work_item_snapshot") {
-      // For state changes: use newValue (the new state from the activity)
-      // For other field changes: use state (the current state of the work item)
-      // This ensures we always capture the correct state
-      const state = (activity.field === "state" || activity.field === "status")
+      const verb = activity.verb || "updated";
+      const field = activity.field || "";
+      
+      const isCreation = verb === "created" || field === "created";
+      const isCycleChange = field === "cycle" || field === "cycles";
+      const isStateChange = field === "state" || field === "status";
+      
+      if (isCreation || isCycleChange || isStateChange) {
+        const updateKey = `${workItemId}-${field}-${verb}`;
+        const existingUpdate = activityUpdates.find(u => u.key === updateKey);
+        
+        if (!existingUpdate) {
+          let action = "";
+          if (isCreation) {
+            action = "created";
+          } else if (isCycleChange) {
+            action = activity.newValue ? `added to ${activity.newValue}` : "updated cycle";
+          } else if (isStateChange) {
+            action = `changed to ${activity.newValue || activity.state || "Unknown"}`;
+          }
+          
+          activityUpdates.push({
+            key: updateKey,
+            id: workItemId,
+            name: workItemName,
+            action: action,
+            actor: activity.actor,
+            time: activity.time || activity.updatedAt,
+            relationships: activity.relationships,
+            state: activity.state || activity.newValue || "Unknown"
+          });
+        }
+      }
+      
+      const state = isStateChange
         ? (activity.newValue || activity.state || "Unknown")
         : (activity.state || activity.newValue || "Unknown");
 
@@ -377,7 +418,7 @@ function processActivities(activities) {
     }
   }
 
-  return { completed, inProgress, todo, comments };
+  return { completed, inProgress, todo, comments, activityUpdates };
 }
 
 /**
@@ -409,7 +450,6 @@ export function formatTeamDataForAI(teamMemberData) {
         }).join("\n")
         : "  None";
 
-      // Format comments - extract unique comments by task
       const commentsByTask = {};
       member.comments?.forEach((comment) => {
         if (!commentsByTask[comment.id]) {
@@ -426,7 +466,7 @@ export function formatTeamDataForAI(teamMemberData) {
               member.todo?.find((t) => t.id === taskId);
             const taskName = task?.name || taskId;
             const relText = task?.relationships ? formatRelationships(task.relationships) : "";
-            return `  • ${taskId}: ${commentList[0]}${relText}`; // Use first comment as summary
+            return `  • ${taskId}: ${commentList[0]}${relText}`;
           })
           .join("\n")
         : "  None";
@@ -476,7 +516,7 @@ STRICT RULES:
 5. Follow the EXACT output format below
 6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
 7. Include relationship information ONLY when it appears in brackets after task names (e.g., relates_to: SLMRA-35)
-8. If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, No need to include them.
+8. If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, do not include them.
 9. DO NOT add relationship brackets if no relationship information is provided
 
 OUTPUT FORMAT:
@@ -497,7 +537,6 @@ CYCLE_NAME -> X% completed
 **Tasks/SubTasks Todo:**
 • TASK-ID: Task Name (State)
 • TASK-ID: Task Name (State) [relates_to: TASK-ID]
-
 
 **Comments/Updates:**
 • TASK-ID: Brief comment summary

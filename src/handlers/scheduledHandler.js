@@ -120,6 +120,7 @@ STRICT RULES:
 4. Use clear, professional language
 5. Follow the EXACT output format below
 6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
+7. If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, do not include them.
 
 OUTPUT FORMAT:
 
@@ -146,18 +147,6 @@ CYCLE_NAME -> X% completed
 
 **TEAM_MEMBER_B**
 
-**Tasks/SubTasks Done:**
-• TASK-ID: Task Name
-
-**Tasks/SubTasks in Progress:**
-• TASK-ID: Task Name (State)
-
-**Tasks/SubTasks Todo:**
-• TASK-ID: Task Name (State)
-
-**Comments/Updates:**
-• TASK-ID: Brief comment summary
-
 [Continue for all team members...]
 
 ---
@@ -171,7 +160,6 @@ FORMATTING RULES:
 - For in-progress items, include the state in parentheses
 - For todo items, include the state in parentheses
 - For comments, include the task ID and a brief summary of the update
-- If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, No need to include them.
 - Separate team members with blank lines
 - Include ALL team members provided, even those with no activity`;
         const userPrompt = `Format this team daily summary for ${today} using the exact format specified. Include comments as they show progress on tasks even when there are no formal state changes.
