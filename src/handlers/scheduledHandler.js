@@ -17,7 +17,6 @@ import logger from '../utils/logger.js';
  * @param {Object} ctx - Context object
  */
 export async function handleScheduled(event, env, ctx) {
-  logger.info('Cron job triggered: Daily team summary at 8:00 PM IST (2:30 PM UTC)');
 
   const channelId = env.DAILY_SUMMARY_CHANNEL_ID;
   const discordToken = env.DISCORD_TOKEN;
@@ -40,11 +39,16 @@ export async function handleScheduled(event, env, ctx) {
   });
 
   try {
-    // Get today's date in IST (UTC+5:30)
-    const now = new Date();
-    const istOffset = 5.5 * 60 * 60 * 1000;
-    const istDate = new Date(now.getTime() + istOffset);
-    const today = istDate.toISOString().split('T')[0];
+    // Parse date like the manual team_daily_summary command does
+    let targetDate = new Date();
+
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // Get date string for display
+    const dateKey = targetDate.toISOString().split('T')[0];
 
     // Get all projects
     const projects = await fetchProjects();
@@ -52,14 +56,14 @@ export async function handleScheduled(event, env, ctx) {
     if (!projects || projects.length === 0) {
       logger.warn('No projects found for scheduled team summary');
       await sendMessageToChannel(channelId, discordToken, {
-        content: `⚠️ No projects found for daily team summary on ${today}`
+        content: `⚠️ No projects found for daily team summary on ${dateKey}`
       });
       return;
     }
 
     // Send a header message
     await sendMessageToChannel(channelId, discordToken, {
-      content: `📅 **Daily Team Summary - ${today}**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+      content: `📅 **Daily Team Summary - ${dateKey}**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
     });
 
     let summariesSent = 0;
@@ -84,20 +88,14 @@ export async function handleScheduled(event, env, ctx) {
         // Clear old activity caches before starting new session
         clearActivityCaches();
 
-        // Parse date for activity filtering
-        const startOfDay = new Date(istDate);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(istDate);
-        endOfDay.setHours(23, 59, 59, 999);
-
-        // Process team activities using the shared service
+        // Process team activities using the shared service (same as manual command)
         const { teamMemberData, cycleInfo } = await processTeamActivities(
           projectId,
           projectName,
           projectIdentifier,
           startOfDay,
           endOfDay,
-          today
+          dateKey
         );
 
         // Skip if no activity
@@ -120,7 +118,9 @@ STRICT RULES:
 4. Use clear, professional language
 5. Follow the EXACT output format below
 6. Include comments showing progress updates on tasks (e.g., "Updated via comment: task description")
-7. If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, do not include them.
+7. Include relationship information ONLY when it appears in brackets after task names (e.g., relates_to: SLMRA-35)
+8. If a member has no completed tasks, no in-progress tasks, no comments, and no todo items, do not include them.
+9. DO NOT add relationship brackets if no relationship information is provided
 
 OUTPUT FORMAT:
 
@@ -131,40 +131,29 @@ CYCLE_NAME -> X% completed
 
 **Tasks/SubTasks Done:**
 • TASK-ID: Task Name
-[or "None" if no completed items]
+• TASK-ID: Task Name [relates_to: TASK-ID]
 
 **Tasks/SubTasks in Progress:**
 • TASK-ID: Task Name (State)
-[or "None" if no in-progress items]
+• TASK-ID: Task Name (State) [relates_to: TASK-ID]
 
 **Tasks/SubTasks Todo:**
 • TASK-ID: Task Name (State)
-[or "None" if no todo items]
+• TASK-ID: Task Name (State) [relates_to: TASK-ID]
 
 **Comments/Updates:**
 • TASK-ID: Brief comment summary
-[or "None" if no comments]
+• TASK-ID: Brief comment summary [relates_to: TASK-ID]
 
 **TEAM_MEMBER_B**
 
 [Continue for all team members...]
 
----
-
-FORMATTING RULES:
-- Project name should be in bold
-- Cycle info on its own line with arrow and percentage
-- Each team member name should be in bold
-- Use bullet points (•) for task lists
-- Include task ID and name for each item
-- For in-progress items, include the state in parentheses
-- For todo items, include the state in parentheses
-- For comments, include the task ID and a brief summary of the update
-- Separate team members with blank lines
-- Include ALL team members provided, even those with no activity`;
-        const userPrompt = `Format this team daily summary for ${today} using the exact format specified. Include comments as they show progress on tasks even when there are no formal state changes.
+---`;
+        const userPrompt = `Format this team daily summary for ${dateKey} using the exact format specified. Include comments as they show progress on tasks even when there are no formal state changes.
 PROJECT: ${projectName}
 CYCLE INFO: ${cycleInfo}
+
 TEAM MEMBERS DATA:
 ${formattedTeamData}`;
         const result = await generateText({
@@ -183,7 +172,7 @@ ${formattedTeamData}`;
         }
 
         // Create and send embeds
-        const embedPayload = createTeamSummaryEmbed(projectName, today, summary, teamMemberData.length);
+        const embedPayload = createTeamSummaryEmbed(projectName, dateKey, summary, teamMemberData.length);
 
         // Send to Discord
         const sent = await sendMessageToChannel(channelId, discordToken, embedPayload);
@@ -195,8 +184,8 @@ ${formattedTeamData}`;
 
         // Wait 30 seconds between projects to stay under Plane's 60 req/min rate limit
         // This ensures we never exceed the rate limit even with multiple API calls per project
-        logger.info(`Waiting 30 seconds before processing next project...`);
-        await new Promise(resolve => setTimeout(resolve, 30000));
+        logger.info(`Waiting 25 seconds before processing next project...`);
+        await new Promise(resolve => setTimeout(resolve, 25000));
 
       } catch (projectError) {
         logger.error(`Error generating scheduled team summary for project ${project.name}: ${projectError.message}`);
