@@ -1,4 +1,4 @@
-import { fetchProjects, startProjectSession, clearActivityCaches } from '../services/planeApiDirect.js';
+import { fetchProjects } from '../services/planeApiDirect.js';
 import {
   processTeamActivities,
   formatTeamDataForAI,
@@ -73,12 +73,8 @@ export async function handleTeamDailySummary(interaction, env) {
     const projectId = selectedProject.id;
     const projectName = selectedProject.name;
 
-    // Start a new caching session for this project
-    // This ensures fresh data is fetched once, then cached for all subsequent requests
-    startProjectSession(projectId);
-    clearActivityCaches(); // Clear any old cached data
-
-    // Process team activities using the shared service
+    // Process team activities using the OPTIMIZED service
+    // The service now handles session management and cache clearing internally
     const { teamMemberData, cycleInfo } = await processTeamActivities(
       projectId,
       projectName,
@@ -101,10 +97,14 @@ export async function handleTeamDailySummary(interaction, env) {
     }
 
     // Format and send summary using AI
+    logger.info(`Formatted team data length: ${formatTeamDataForAI(teamMemberData).length} chars`);
     const formattedTeamData = formatTeamDataForAI(teamMemberData);
+    logger.info('Starting AI summary generation...');
     const summary = await generateTeamSummary(formattedTeamData, projectName, dateKey, cycleInfo, env);
+    logger.info(`AI summary generated, length: ${summary.length} chars`);
 
     // Create and send embeds
+    logger.info('Sending embed to Discord...');
     const embedPayload = createTeamSummaryEmbed(projectName, dateKey, summary, teamMemberData.length);
     await sendFollowUp(app_id, interaction_token, embedPayload);
     logger.info('Team summary sent successfully');

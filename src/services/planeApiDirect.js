@@ -11,10 +11,12 @@ const INITIAL_RETRY_DELAY_MS = 20000; // 20 seconds
 const MAX_WORK_ITEMS_PER_PROJECT = 200;
 const MAX_ACTIVITIES_PER_ITEM = 20;
 const REQUEST_TIMEOUT_MS = 45000;
-const MAX_CONCURRENT_ACTIVITY_FETCHES = 2; // Reduced from 5 to avoid 429s
-const BATCH_DELAY_MS = 20000; // 20 seconds
+const MAX_CONCURRENT_ACTIVITY_FETCHES = 5; // Increased from 2 for better throughput
+const MAX_CONCURRENT_PROJECT_FETCHES = 3; // Parallel project processing
+const BATCH_DELAY_MS = 500; // Reduced from 20000ms - rate limiter handles 429s
 const PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache projects for 5 minutes
 const USERS_CACHE_TTL_MS = 30 * 60 * 1000; // Cache users for 30 minutes
+const PROJECT_MEMBERS_CACHE_TTL_MS = 10 * 60 * 1000; // Cache project members for 10 minutes
 
 /**
  * Initialize the Plane service with configuration
@@ -47,6 +49,11 @@ let projectsCache = null;
 let projectsCacheTime = null;
 let workspaceDetailsCache = null;
 let usersCache = new Map(); // Map of userId -> user details
+let usersCacheTime = null; // Track when users were last fully fetched
+let allUsersLoaded = false; // Flag to track if we've loaded all users
+
+// Project members cache: Map of projectId -> { data: members[], timestamp: number }
+let projectMembersCache = new Map();
 
 // Work items cache: Map of projectId -> { data: items[], timestamp: number, sessionId: string }
 const WORK_ITEMS_CACHE_TTL_MS = 5 * 60 * 1000; // Cache for 5 minutes per session
@@ -198,53 +205,75 @@ async function fetchWorkItemSubitems(projectId, workItemId) {
 }
 
 /**
- * Fetch user details by ID from workspace members
+ * Preload all workspace members into cache for fast lookup
+ * Call this once at the start of processing to avoid repeated API calls
  */
-async function fetchUserName(userId) {
+async function preloadAllUsers() {
   ensureApi();
-  // Return from cache if available
-  if (usersCache.has(userId)) {
-    return usersCache.get(userId);
+
+  // Skip if already loaded recently
+  if (allUsersLoaded && usersCacheTime && isCacheValid(usersCacheTime, USERS_CACHE_TTL_MS)) {
+    logger.info(`✓ Users already preloaded (${usersCache.size} cached)`);
+    return;
   }
 
   try {
+    logger.info("📡 Preloading all workspace members...");
     const response = await apiRequestWithRetry(
       () =>
         PLANE_API.get(`/workspaces/${serviceConfig.WORKSPACE_SLUG}/members/`, {
           params: { page: 1, per_page: 100 },
         }),
-      `fetchMembers`
+      `preloadAllUsers`
     );
 
     const members = response.data.results || response.data || [];
 
-    // Find user by ID
-    const user = members.find((m) =>
-      m.id === userId ||
-      m.member_id === userId ||
-      m.member?.id === userId ||
-      m.user?.id === userId
-    );
-
-    if (user) {
-      const userData = user.member || user.user || user;
+    // Cache all users by their various IDs
+    for (const member of members) {
+      const userData = member.member || member.user || member;
       const userName =
-        user.display_name ||
+        member.display_name ||
         userData.display_name ||
         userData.first_name ||
         userData.email ||
-        userId;
+        userData.id;
 
-      // Cache it
-      usersCache.set(userId, userName);
-      return userName;
+      // Cache by all possible IDs
+      if (member.id) usersCache.set(member.id, userName);
+      if (member.member_id) usersCache.set(member.member_id, userName);
+      if (userData.id && userData.id !== member.id) usersCache.set(userData.id, userName);
     }
 
-    return userId;
+    usersCacheTime = Date.now();
+    allUsersLoaded = true;
+    logger.info(`✓ Preloaded ${members.length} users into cache`);
   } catch (error) {
-    logger.warn(`Failed to fetch user ${userId}: ${error.message}`);
-    return userId;
+    logger.warn(`Failed to preload users: ${error.message}`);
   }
+}
+
+/**
+ * Fetch user details by ID from cache (preload first!)
+ */
+async function fetchUserName(userId) {
+  ensureApi();
+
+  // Return from cache if available
+  if (usersCache.has(userId)) {
+    return usersCache.get(userId);
+  }
+
+  // If not in cache and we haven't preloaded, preload now
+  if (!allUsersLoaded) {
+    await preloadAllUsers();
+    if (usersCache.has(userId)) {
+      return usersCache.get(userId);
+    }
+  }
+
+  // Still not found, return the ID
+  return userId;
 }
 
 /**
@@ -269,29 +298,117 @@ async function getWorkspaceMembers() {
 }
 
 /**
- * Fetch members assigned to a specific project
+ * Fetch members assigned to a specific project with caching
  * @param {string} projectId - Project ID
  * @returns {Promise<Array>} List of project members
  */
 async function getProjectMembers(projectId) {
   ensureApi();
-  try {
-    const response = await apiRequestWithRetry(
-      () =>
-        PLANE_API.get(
-          `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/members/`,
-          { params: { page: 1, per_page: 100 } }
-        ),
-      `getProjectMembers(${projectId})`
-    );
 
-    return response.data.results || response.data || [];
-  } catch (error) {
-    logger.error(
-      `Failed to fetch members for project ${projectId}: ${error.message}`
-    );
-    return [];
+  // Check cache first
+  const cacheEntry = projectMembersCache.get(projectId);
+  if (cacheEntry && isCacheValid(cacheEntry.timestamp, PROJECT_MEMBERS_CACHE_TTL_MS)) {
+    logger.debug(`✓ Using cached project members for ${projectId}`);
+    return cacheEntry.data;
   }
+
+  // Check for pending request
+  const cacheKey = `projectMembers:${projectId}`;
+  if (pendingRequests.has(cacheKey)) {
+    logger.debug(`⏳ Waiting for in-flight project members request for ${projectId}`);
+    return pendingRequests.get(cacheKey);
+  }
+
+  const requestPromise = (async () => {
+    try {
+      const response = await apiRequestWithRetry(
+        () =>
+          PLANE_API.get(
+            `/workspaces/${serviceConfig.WORKSPACE_SLUG}/projects/${projectId}/members/`,
+            { params: { page: 1, per_page: 100 } }
+          ),
+        `getProjectMembers(${projectId})`
+      );
+
+      const members = response.data.results || response.data || [];
+
+      // Cache the result
+      projectMembersCache.set(projectId, {
+        data: members,
+        timestamp: Date.now(),
+      });
+
+      return members;
+    } finally {
+      pendingRequests.delete(cacheKey);
+    }
+  })();
+
+  pendingRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+/**
+ * Extract member IDs from project members response
+ */
+function extractMemberIds(members) {
+  const memberIds = new Set();
+  const memberNames = new Map(); // id -> name for quick lookup
+
+  for (const member of members) {
+    const userData = member.member || member.user || member;
+    const memberId = member.member_id || userData.id || member.id;
+    const memberName =
+      member.display_name ||
+      userData.display_name ||
+      userData.first_name ||
+      userData.email ||
+      memberId;
+
+    if (memberId) {
+      memberIds.add(memberId);
+      memberNames.set(memberId, memberName);
+      // Also cache in users cache
+      usersCache.set(memberId, memberName);
+    }
+  }
+
+  return { memberIds, memberNames };
+}
+
+/**
+ * Check if a work item is relevant to project members
+ * A work item is relevant if it's:
+ * 1. Assigned to any project member, OR
+ * 2. Created by a project member, OR
+ * 3. Updated by a project member
+ */
+function isRelevantToMembers(workItem, memberIds) {
+  // Check assignees array
+  if (workItem.assignees && Array.isArray(workItem.assignees)) {
+    for (const assigneeId of workItem.assignees) {
+      if (memberIds.has(assigneeId)) return true;
+    }
+  }
+
+  // Check assignee_details array
+  if (workItem.assignee_details && Array.isArray(workItem.assignee_details)) {
+    for (const assignee of workItem.assignee_details) {
+      if (memberIds.has(assignee.id)) return true;
+    }
+  }
+
+  // Check if created by a project member
+  if (workItem.created_by && memberIds.has(workItem.created_by)) {
+    return true;
+  }
+
+  // Check if updated by a project member
+  if (workItem.updated_by && memberIds.has(workItem.updated_by)) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -371,7 +488,7 @@ async function apiRequestWithRetry(requestFn, context = "") {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       const result = await requestFn();
-      logger.info(`✓ ${context} succeeded`);
+      logger.debug(`✓ ${context} succeeded`);
       return result;
     } catch (error) {
       lastError = error;
@@ -518,7 +635,7 @@ async function fetchWorkItems(projectId) {
     const data = response.data;
     const resultsCount = Array.isArray(data) ? data.length : data.results?.length || 0;
 
-    logger.info(
+    logger.debug(
       `Work items API response: ${JSON.stringify({
         isArray: Array.isArray(data),
         hasResults: !!data.results,
@@ -630,7 +747,302 @@ async function getTeamActivities(startDate, endDate, projectFilter = null, actor
 }
 
 /**
- * Internal implementation of getTeamActivities
+ * Process a single project's activities - optimized version
+ */
+async function processProjectActivities(
+  project,
+  startDate,
+  endDate,
+  actorFilter,
+  activityLimiter
+) {
+  const activities = [];
+  const projectId = project.id;
+  const projectIdentifier = project.identifier || project.name;
+
+  // Start a new caching session for this project
+  startProjectSession(projectId);
+
+  // OPTIMIZATION: Fetch project members first
+  let projectMembers;
+  try {
+    projectMembers = await getProjectMembers(projectId);
+    logger.info(`Project ${projectIdentifier}: ${projectMembers.length} members`);
+  } catch (error) {
+    if (error.response?.status === 403) {
+      logger.warn(`Skipping project ${projectIdentifier}: no access (403)`);
+      return [];
+    }
+    throw error;
+  }
+
+  // If no members, skip this project
+  if (projectMembers.length === 0) {
+    logger.info(`Skipping ${projectIdentifier} - no project members`);
+    return [];
+  }
+
+  // Extract member IDs for filtering
+  const { memberIds, memberNames } = extractMemberIds(projectMembers);
+  logger.debug(`Project ${projectIdentifier} member IDs: ${[...memberIds].join(", ")}`);
+
+  // Fetch work items for this project
+  let workItems;
+  try {
+    workItems = await getWorkItemsWithCache(projectId);
+  } catch (error) {
+    if (error.response?.status === 403) {
+      logger.warn(`Skipping project ${projectIdentifier}: no access (403)`);
+      return [];
+    }
+    throw error;
+  }
+
+  logger.info(`Project ${projectIdentifier}: ${workItems.length} work items`);
+
+  // Skip if no work items found
+  if (workItems.length === 0) {
+    logger.info(`Skipping ${projectIdentifier} - no work items`);
+    return [];
+  }
+
+  // OPTIMIZATION: Pre-filter work items to only those:
+  // 1. Updated/created in date range
+  // 2. Assigned to project members
+  const relevantWorkItems = [];
+
+  for (const workItem of workItems) {
+    const createdAt = new Date(workItem.created_at);
+    const updatedAt = new Date(workItem.updated_at);
+    const itemInDateRange =
+      (createdAt >= startDate && createdAt <= endDate) ||
+      (updatedAt >= startDate && updatedAt <= endDate);
+
+    if (!itemInDateRange) continue;
+
+    // OPTIMIZATION: Only include work items relevant to project members
+    // (assigned to, created by, or updated by project members)
+    if (!isRelevantToMembers(workItem, memberIds)) {
+      continue;
+    }
+
+    // Extract assignee names from the work item
+    const assigneeNames = workItem.assignee_details?.map(
+      (a) => a.display_name || a.email || "Unassigned"
+    ) || [];
+
+    relevantWorkItems.push({
+      projectId,
+      workItemId: workItem.id,
+      workItemIdentifier: `${projectIdentifier}-${workItem.sequence_id}`,
+      workItemName: workItem.name,
+      projectIdentifier,
+      createdAt,
+      updatedAt,
+      assignees: assigneeNames,
+      state: workItem.state?.name || workItem.state_detail?.name || "Unknown",
+      priority: workItem.priority || "none",
+      relationships: {},
+    });
+  }
+
+  logger.info(`Project ${projectIdentifier}: ${relevantWorkItems.length} relevant work items (filtered from ${workItems.length})`);
+
+  // Process relevant work items in parallel with concurrency limit
+  await Promise.all(
+    relevantWorkItems.map((task) =>
+      activityLimiter.run(async () => {
+        try {
+          // Fetch activities, comments, subitems in parallel for this work item
+          const [itemActivities, comments, subitems] = await Promise.all([
+            getActivitiesWithCache(task.projectId, task.workItemId),
+            getCommentsWithCache(task.projectId, task.workItemId).catch(() => []),
+            getSubitemsWithCache(task.projectId, task.workItemId).catch(() => []),
+          ]);
+
+          // Extract relationships from activities (no extra API call needed)
+          const relationshipFields = ['relates_to', 'blocks', 'blocked_by', 'depends_on', 'parent'];
+          const currentRelationships = {};
+          const sortedActivities = [...itemActivities].sort((a, b) =>
+            new Date(b.created_at) - new Date(a.created_at)
+          );
+          for (const activity of sortedActivities) {
+            const field = activity.field;
+            if (relationshipFields.includes(field) && !currentRelationships[field]) {
+              currentRelationships[field] = {
+                value: activity.new_value,
+                updated_at: activity.created_at,
+                updated_by: activity.actor
+              };
+            }
+          }
+          task.relationships = currentRelationships;
+
+          let foundActivityInRange = false;
+
+          // Filter and transform activities within date range
+          for (const activity of itemActivities.slice(0, MAX_ACTIVITIES_PER_ITEM)) {
+            const activityDate = new Date(activity.created_at || activity.updated_at);
+            if (activityDate >= startDate && activityDate <= endDate) {
+              // Get actor name from cache (preloaded)
+              const actorName = await fetchUserName(activity.actor);
+
+              // Filter by actor if requested (fuzzy name matching)
+              if (actorFilter && !namesMatch(actorName, actorFilter)) {
+                continue;
+              }
+
+              foundActivityInRange = true;
+
+              logger.debug(`Activity: ${task.workItemIdentifier} by ${actorName}`);
+
+              activities.push({
+                type: "activity",
+                workItem: task.workItemIdentifier,
+                workItemName: task.workItemName,
+                project: task.projectIdentifier,
+                actor: actorName,
+                field: activity.field || "status",
+                oldValue: activity.old_value,
+                newValue: activity.new_value,
+                verb: activity.verb || "updated",
+                time: activityDate.toISOString(),
+                state: task.state || "Unknown",
+                relationships: task.relationships,
+              });
+            }
+          }
+
+          // Process comments
+          for (const comment of comments.slice(0, MAX_ACTIVITIES_PER_ITEM)) {
+            const commentDate = new Date(comment.created_at);
+            if (commentDate >= startDate && commentDate <= endDate) {
+              foundActivityInRange = true;
+
+              const commentActor = await fetchUserName(comment.actor || comment.created_by);
+
+              // For comments: only include if the person being processed wrote the comment
+              if (actorFilter && !namesMatch(commentActor, actorFilter)) {
+                logger.debug(`Comment on ${task.workItemIdentifier}: written by ${commentActor}, but filtering for ${actorFilter}, skipping`);
+                continue;
+              }
+
+              logger.debug(`  ✓ Including comment on ${task.workItemIdentifier} by ${commentActor}`);
+
+              activities.push({
+                type: "comment",
+                workItem: task.workItemIdentifier,
+                workItemName: task.workItemName,
+                project: task.projectIdentifier,
+                actor: commentActor,
+                comment:
+                  comment.comment_stripped ||
+                  comment.comment_html?.replace(/<[^>]*>/g, "") ||
+                  "",
+                time: commentDate.toISOString(),
+                state: task.state || "Unknown",
+                relationships: task.relationships,
+              });
+            }
+          }
+
+          // Process subitems
+          if (subitems && subitems.length > 0) {
+            for (const subitem of subitems) {
+              // Filter by actor (assignee) if requested (fuzzy name matching)
+              if (actorFilter) {
+                const isAssignee = subitem.assignee_details?.some(
+                  (a) =>
+                    namesMatch(a.display_name, actorFilter) || namesMatch(a.email, actorFilter)
+                );
+                if (!isAssignee) continue;
+              }
+
+              const subitemIdentifier = `${task.projectIdentifier}-${subitem.sequence_id}`;
+              const subitemState =
+                subitem.state?.name || subitem.state_detail?.name || "Unknown";
+              const subitemPriority = subitem.priority || "none";
+              const subitemProgress = subitem.progress || {};
+              const completionPercentage = subitemProgress.total_issues
+                ? Math.round(
+                  ((subitemProgress.completed_issues || 0) /
+                    (subitemProgress.total_issues || 1)) *
+                  100
+                )
+                : 0;
+
+              activities.push({
+                type: "subitem",
+                parentWorkItem: task.workItemIdentifier,
+                parentWorkItemName: task.workItemName,
+                project: task.projectIdentifier,
+                workItem: subitemIdentifier,
+                workItemName: subitem.name,
+                state: subitemState,
+                priority: subitemPriority,
+                assignees: subitem.assignee_details?.map(
+                  (a) => a.display_name || a.email || "Unassigned"
+                ) || ["Unassigned"],
+                progress: {
+                  completedIssues: subitemProgress.completed_issues || 0,
+                  totalIssues: subitemProgress.total_issues || 0,
+                  percentageComplete: completionPercentage,
+                },
+                createdAt: subitem.created_at,
+                updatedAt: subitem.updated_at,
+              });
+            }
+          }
+
+          // If no activities found, add snapshot ONLY if the actor is assigned to this work item
+          if (!foundActivityInRange) {
+            const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
+
+            if (isAssigned) {
+              activities.push({
+                type: "work_item_snapshot",
+                workItem: task.workItemIdentifier,
+                workItemName: task.workItemName,
+                project: task.projectIdentifier,
+                state: task.state || "Unknown",
+                priority: task.priority || "None",
+                assignees: task.assignees || [],
+                createdAt: task.createdAt.toISOString(),
+                updatedAt: task.updatedAt.toISOString(),
+                relationships: task.relationships,
+              });
+            }
+          }
+        } catch (error) {
+          logger.warn(
+            `Error fetching activities for ${task.workItemIdentifier}: ${error.message}`
+          );
+          // Add snapshot on error ONLY if the actor is assigned to this work item (fuzzy name matching)
+          const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
+          if (isAssigned) {
+            activities.push({
+              type: "work_item_snapshot",
+              workItem: task.workItemIdentifier,
+              workItemName: task.workItemName,
+              project: task.projectIdentifier,
+              state: task.state || "Unknown",
+              priority: task.priority || "None",
+              assignees: task.assignees || [],
+              createdAt: task.createdAt.toISOString(),
+              updatedAt: task.updatedAt.toISOString(),
+              relationships: task.relationships,
+            });
+          }
+        }
+      })
+    )
+  );
+
+  return activities;
+}
+
+/**
+ * Internal implementation of getTeamActivities - OPTIMIZED VERSION
  */
 async function _getTeamActivitiesInternal(
   startDate,
@@ -638,13 +1050,17 @@ async function _getTeamActivitiesInternal(
   projectFilter = null,
   actorFilter = null
 ) {
+  const startTime = Date.now();
   logger.info(
-    `Fetching team activities from ${startDate.toISOString()} to ${endDate.toISOString()}${projectFilter ? ` for project: ${projectFilter}` : ""
-    }`
+    `🚀 Fetching team activities from ${startDate.toISOString()} to ${endDate.toISOString()}${projectFilter ? ` for project: ${projectFilter}` : ""
+    }${actorFilter ? ` for actor: ${actorFilter}` : ""}`
   );
 
-  const activities = [];
-  const limiter = new ConcurrencyLimiter(MAX_CONCURRENT_ACTIVITY_FETCHES);
+  // OPTIMIZATION: Preload all users at the start for fast lookup
+  await preloadAllUsers();
+
+  const activityLimiter = new ConcurrencyLimiter(MAX_CONCURRENT_ACTIVITY_FETCHES);
+  const projectLimiter = new ConcurrencyLimiter(MAX_CONCURRENT_PROJECT_FETCHES);
 
   // Fetch projects from cache (or fetch if expired)
   let projects = await getProjectsWithCache();
@@ -673,301 +1089,26 @@ async function _getTeamActivitiesInternal(
     }`
   );
 
-  // Collect all activity fetch tasks
-  const activityFetchTasks = [];
-
-  for (const project of projects) {
-    const projectId = project.id;
-    const projectIdentifier = project.identifier || project.name;
-
-    // Start a new caching session for this project
-    // This ensures fresh data is fetched once, then cached for all subsequent requests
-    startProjectSession(projectId);
-
-    // Fetch work items for this project
-    let workItems;
-    try {
-      workItems = await getWorkItemsWithCache(projectId);
-    } catch (error) {
-      if (error.response?.status === 403) {
-        logger.warn(`Skipping project ${projectIdentifier}: no access (403)`);
-        continue;
-      }
-      throw error;
-    }
-
-    logger.info(`Project ${projectIdentifier}: ${workItems.length} work items`);
-
-    // Skip if no work items found
-    if (workItems.length === 0) {
-      logger.info(`Skipping ${projectIdentifier} - no work items`);
-      continue;
-    }
-
-    for (const workItem of workItems) {
-      const workItemId = workItem.id;
-      const workItemIdentifier = `${projectIdentifier}-${workItem.sequence_id}`;
-      const workItemName = workItem.name;
-
-      // Check if work item was created or updated in the date range
-      const createdAt = new Date(workItem.created_at);
-      const updatedAt = new Date(workItem.updated_at);
-      const itemInDateRange =
-        (createdAt >= startDate && createdAt <= endDate) ||
-        (updatedAt >= startDate && updatedAt <= endDate);
-
-      if (!itemInDateRange) {
-        // Item wasn't created/updated in range, skip
-        continue;
-      }
-
-      // Extract assignee names from the work item
-      const assigneeNames = workItem.assignee_details?.map(
-        (a) => a.display_name || a.email || "Unassigned"
-      ) || [];
-
-      if (assigneeNames.length > 0) {
-        logger.debug(`Work item ${projectIdentifier}-${workItem.sequence_id}: assignees=[${assigneeNames.join(", ")}]`);
-      }
-
-      // Queue activity fetch task
-      activityFetchTasks.push({
-        projectId,
-        workItemId,
-        workItemIdentifier,
-        workItemName,
-        projectIdentifier,
-        createdAt,
-        updatedAt,
-        assignees: assigneeNames,
-        state: workItem.state?.name || workItem.state_detail?.name || "Unknown",
-        priority: workItem.priority || "none",
-        relationships: {}, // Will be populated later
-      });
-    }
-  }
-
-  // Fetch all activities in parallel with concurrency limit
-  await Promise.all(
-    activityFetchTasks.map((task) =>
-      limiter.run(async () => {
-        try {
-          const itemActivities = await getActivitiesWithCache(
-            task.projectId,
-            task.workItemId
-          );
-
-          // Also fetch current relationships for this work item
-          const relationships = await fetchWorkItemRelationships(
-            task.projectId,
-            task.workItemId
-          );
-          task.relationships = relationships;
-
-          // Small delay to prevent overwhelming the API
-          await sleep(1000);
-
-          let foundActivityInRange = false;
-
-          // Filter and transform activities within date range
-          for (const activity of itemActivities.slice(
-            0,
-            MAX_ACTIVITIES_PER_ITEM
-          )) {
-            const activityDate = new Date(
-              activity.created_at || activity.updated_at
-            );
-            if (activityDate >= startDate && activityDate <= endDate) {
-              foundActivityInRange = true;
-
-              // Fetch actor name from user ID
-              const actorName = await fetchUserName(activity.actor);
-
-              // Filter by actor if requested (fuzzy name matching)
-              if (actorFilter && !namesMatch(actorName, actorFilter)) {
-                continue;
-              }
-
-              foundActivityInRange = true;
-
-              logger.debug(
-                `Activity: ${task.workItemIdentifier} by ${actorName}`
-              );
-
-              activities.push({
-                type: "activity",
-                workItem: task.workItemIdentifier,
-                workItemName: task.workItemName,
-                project: task.projectIdentifier,
-                actor: actorName,
-                field: activity.field || "status",
-                oldValue: activity.old_value,
-                newValue: activity.new_value,
-                verb: activity.verb || "updated",
-                time: activityDate.toISOString(),
-                state: task.state || "Unknown", // Include current state of work item
-                relationships: task.relationships, // Include current relationships
-              });
-            }
-          }
-
-          // Fetch and add comments
-          try {
-            const comments = await getCommentsWithCache(
-              task.projectId,
-              task.workItemId
-            );
-
-            // Small delay after fetching comments
-            await sleep(1000);
-
-            for (const comment of comments.slice(0, MAX_ACTIVITIES_PER_ITEM)) {
-              const commentDate = new Date(comment.created_at);
-              if (commentDate >= startDate && commentDate <= endDate) {
-                foundActivityInRange = true;
-
-                const commentActor = await fetchUserName(
-                  comment.actor || comment.created_by
-                );
-
-                // For comments: only include if the person being processed wrote the comment
-                // This ensures comments only appear in the summary of the person who wrote them
-                if (actorFilter && !namesMatch(commentActor, actorFilter)) {
-                  logger.debug(`Comment on ${task.workItemIdentifier}: written by ${commentActor}, but filtering for ${actorFilter}, skipping`);
-                  continue;
-                }
-
-                logger.debug(`  ✓ Including comment on ${task.workItemIdentifier} by ${commentActor}`);
-
-                activities.push({
-                  type: "comment",
-                  workItem: task.workItemIdentifier,
-                  workItemName: task.workItemName,
-                  project: task.projectIdentifier,
-                  actor: commentActor,
-                  comment:
-                    comment.comment_stripped ||
-                    comment.comment_html?.replace(/<[^>]*>/g, "") ||
-                    "",
-                  time: commentDate.toISOString(),
-                  state: task.state || "Unknown", // Include current state of work item
-                  relationships: task.relationships, // Include current relationships
-                });
-              }
-            }
-          } catch (error) {
-            logger.debug(
-              `Could not fetch comments for ${task.workItemIdentifier}: ${error.message}`
-            );
-          }
-
-          // Fetch and add subitems with progress info
-          try {
-            const subitems = await getSubitemsWithCache(
-              task.projectId,
-              task.workItemId
-            );
-
-            // Small delay after fetching subitems
-            await sleep(1000);
-
-            if (subitems && subitems.length > 0) {
-              for (const subitem of subitems) {
-                // Filter by actor (assignee) if requested (fuzzy name matching)
-                if (actorFilter) {
-                  const isAssignee = subitem.assignee_details?.some(
-                    (a) =>
-                      namesMatch(a.display_name, actorFilter) || namesMatch(a.email, actorFilter)
-                  );
-                  if (!isAssignee) continue;
-                }
-
-                const subitemIdentifier = `${task.projectIdentifier}-${subitem.sequence_id}`;
-                const subitemState =
-                  subitem.state?.name || subitem.state_detail?.name || "Unknown";
-                const subitemPriority = subitem.priority || "none";
-                const subitemProgress = subitem.progress || {};
-                const completionPercentage = subitemProgress.total_issues
-                  ? Math.round(
-                    ((subitemProgress.completed_issues || 0) /
-                      (subitemProgress.total_issues || 1)) *
-                    100
-                  )
-                  : 0;
-
-                activities.push({
-                  type: "subitem",
-                  parentWorkItem: task.workItemIdentifier,
-                  parentWorkItemName: task.workItemName,
-                  project: task.projectIdentifier,
-                  workItem: subitemIdentifier,
-                  workItemName: subitem.name,
-                  state: subitemState,
-                  priority: subitemPriority,
-                  assignees: subitem.assignee_details?.map(
-                    (a) => a.display_name || a.email || "Unassigned"
-                  ) || ["Unassigned"],
-                  progress: {
-                    completedIssues: subitemProgress.completed_issues || 0,
-                    totalIssues: subitemProgress.total_issues || 0,
-                    percentageComplete: completionPercentage,
-                  },
-                  createdAt: subitem.created_at,
-                  updatedAt: subitem.updated_at,
-                });
-              }
-            }
-          } catch (error) {
-            logger.debug(
-              `Could not fetch subitems for ${task.workItemIdentifier}: ${error.message}`
-            );
-          }
-
-          // If no activities found, add snapshot ONLY if the actor is assigned to this work item
-          if (!foundActivityInRange) {
-            const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
-
-            if (isAssigned) {
-              activities.push({
-                type: "work_item_snapshot",
-                workItem: task.workItemIdentifier,
-                workItemName: task.workItemName,
-                project: task.projectIdentifier,
-                state: task.state || "Unknown",
-                priority: task.priority || "None",
-                assignees: task.assignees || [],
-                createdAt: task.createdAt.toISOString(),
-                updatedAt: task.updatedAt.toISOString(),
-                relationships: task.relationships, // Include current relationships
-              });
-            }
-          }
-        } catch (error) {
-          logger.warn(
-            `Error fetching activities for ${task.workItemIdentifier}: ${error.message}`
-          );
-          // Add snapshot on error ONLY if the actor is assigned to this work item (fuzzy name matching)
-          const isAssigned = !actorFilter || (task.assignees && task.assignees.some(a => namesMatch(a, actorFilter)));
-          if (isAssigned) {
-            activities.push({
-              type: "work_item_snapshot",
-              workItem: task.workItemIdentifier,
-              workItemName: task.workItemName,
-              project: task.projectIdentifier,
-              state: task.state || "Unknown",
-              priority: task.priority || "None",
-              assignees: task.assignees || [],
-              createdAt: task.createdAt.toISOString(),
-              updatedAt: task.updatedAt.toISOString(),
-              relationships: task.relationships, // Include current relationships
-            });
-          }
-        }
-      })
+  // OPTIMIZATION: Process projects in parallel with concurrency limit
+  const allActivities = await Promise.all(
+    projects.map((project) =>
+      projectLimiter.run(() =>
+        processProjectActivities(
+          project,
+          startDate,
+          endDate,
+          actorFilter,
+          activityLimiter
+        )
+      )
     )
   );
 
-  logger.info(`Total activities found: ${activities.length}`);
+  // Flatten the activities array
+  const activities = allActivities.flat();
+
+  const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+  logger.info(`✅ Total activities found: ${activities.length} (completed in ${duration}s)`);
   return activities;
 }
 
@@ -1088,20 +1229,20 @@ async function getWorkItemsWithCache(projectId, forceRefresh = false) {
 
   // Return from cache if valid AND in current session
   if (!forceRefresh && cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, WORK_ITEMS_CACHE_TTL_MS)) {
-    logger.info(`✓ Using cached work items for project ${projectId} (session: ${cacheEntry.sessionId})`);
+    logger.debug(`✓ Using cached work items for project ${projectId} (session: ${cacheEntry.sessionId})`);
     return cacheEntry.data;
   }
 
   // Deduplicate: if a request is already in progress, wait for it
   if (pendingRequests.has(cacheKey)) {
-    logger.info(`⏳ Waiting for in-flight work items request for ${projectId}`);
+    logger.debug(`⏳ Waiting for in-flight work items request for ${projectId}`);
     return pendingRequests.get(cacheKey);
   }
 
   // Create a new request and store the promise
   const requestPromise = (async () => {
     try {
-      logger.info(`📡 Fetching fresh work items for project ${projectId}`);
+      logger.debug(`📡 Fetching fresh work items for project ${projectId}`);
       const workItems = await fetchWorkItems(projectId);
 
       // Store with current session ID
@@ -1133,18 +1274,18 @@ async function getActivitiesWithCache(projectId, workItemId) {
 
   // Return from cache if valid AND in current session
   if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, ACTIVITIES_CACHE_TTL_MS)) {
-    logger.info(`✓ Using cached activities for work item ${workItemId}`);
+    logger.debug(`✓ Using cached activities for work item ${workItemId}`);
     return cacheEntry.data;
   }
 
   if (pendingRequests.has(cacheKey)) {
-    logger.info(`⏳ Waiting for in-flight activities request for ${workItemId}`);
+    logger.debug(`⏳ Waiting for in-flight activities request for ${workItemId}`);
     return pendingRequests.get(cacheKey);
   }
 
   const requestPromise = (async () => {
     try {
-      logger.info(`📡 Fetching fresh activities for work item ${workItemId}`);
+      logger.debug(`📡 Fetching fresh activities for work item ${workItemId}`);
       const activities = await fetchWorkItemActivities(projectId, workItemId);
 
       // Store with current session ID
@@ -1176,18 +1317,18 @@ async function getCommentsWithCache(projectId, workItemId) {
 
   // Return from cache if valid AND in current session
   if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, COMMENTS_CACHE_TTL_MS)) {
-    logger.info(`✓ Using cached comments for work item ${workItemId}`);
+    logger.debug(`✓ Using cached comments for work item ${workItemId}`);
     return cacheEntry.data;
   }
 
   if (pendingRequests.has(cacheKey)) {
-    logger.info(`⏳ Waiting for in-flight comments request for ${workItemId}`);
+    logger.debug(`⏳ Waiting for in-flight comments request for ${workItemId}`);
     return pendingRequests.get(cacheKey);
   }
 
   const requestPromise = (async () => {
     try {
-      logger.info(`📡 Fetching fresh comments for work item ${workItemId}`);
+      logger.debug(`📡 Fetching fresh comments for work item ${workItemId}`);
       const comments = await fetchWorkItemComments(projectId, workItemId);
 
       // Store with current session ID
@@ -1219,18 +1360,18 @@ async function getSubitemsWithCache(projectId, workItemId) {
 
   // Return from cache if valid AND in current session
   if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, SUBITEMS_CACHE_TTL_MS)) {
-    logger.info(`✓ Using cached subitems for work item ${workItemId}`);
+    logger.debug(`✓ Using cached subitems for work item ${workItemId}`);
     return cacheEntry.data;
   }
 
   if (pendingRequests.has(cacheKey)) {
-    logger.info(`⏳ Waiting for in-flight subitems request for ${workItemId}`);
+    logger.debug(`⏳ Waiting for in-flight subitems request for ${workItemId}`);
     return pendingRequests.get(cacheKey);
   }
 
   const requestPromise = (async () => {
     try {
-      logger.info(`📡 Fetching fresh subitems for work item ${workItemId}`);
+      logger.debug(`📡 Fetching fresh subitems for work item ${workItemId}`);
       const subitems = await fetchWorkItemSubitems(projectId, workItemId);
 
       // Store with current session ID
@@ -1261,18 +1402,18 @@ async function getCyclesWithCache(projectId) {
 
   // Return from cache if valid AND in current session
   if (cacheEntry && isInCurrentSession(cacheEntry) && isCacheValid(cacheEntry.timestamp, CYCLES_CACHE_TTL_MS)) {
-    logger.info(`✓ Using cached cycles for project ${projectId}`);
+    logger.debug(`✓ Using cached cycles for project ${projectId}`);
     return cacheEntry.data;
   }
 
   if (pendingRequests.has(cacheKey)) {
-    logger.info(`⏳ Waiting for in-flight cycles request for ${projectId}`);
+    logger.debug(`⏳ Waiting for in-flight cycles request for ${projectId}`);
     return pendingRequests.get(cacheKey);
   }
 
   const requestPromise = (async () => {
     try {
-      logger.info(`📡 Fetching fresh cycles for project ${projectId}`);
+      logger.debug(`📡 Fetching fresh cycles for project ${projectId}`);
       const cycles = await fetchCycles(projectId);
 
       // Store with current session ID
@@ -1328,4 +1469,5 @@ export {
   clearActivityCaches,
   startProjectSession,
   clearProjectCache,
+  preloadAllUsers,
 };

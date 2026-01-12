@@ -1,9 +1,10 @@
 import {
   getTeamActivities,
-  fetchProjects,
   getProjectMembers,
   getCyclesWithCache,
-  clearActivityCaches
+  clearActivityCaches,
+  startProjectSession,
+  preloadAllUsers
 } from './planeApiDirect.js';
 import { generateText } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -11,7 +12,24 @@ import logger from '../utils/logger.js';
 import { matchesStateCategory } from '../utils/stateUtils.js';
 
 /**
- * Process team activities for a specific project and date range
+ * Normalize a name for comparison by removing special characters, converting to lowercase
+ */
+function normalizeName(name) {
+  if (!name || typeof name !== 'string') return '';
+  return name.toLowerCase().replace(/[.\-_\s]+/g, '');
+}
+
+/**
+ * Check if two names match (handles different formats)
+ */
+function namesMatch(name1, name2) {
+  if (!name1 || !name2) return false;
+  return normalizeName(name1) === normalizeName(name2);
+}
+
+/**
+ * Process team activities for a specific project and date range - OPTIMIZED VERSION
+ * Fetches all activities ONCE then groups by member in memory
  * @param {string} projectId - Project ID
  * @param {string} projectName - Project name
  * @param {string} projectIdentifier - Project identifier
@@ -21,10 +39,62 @@ import { matchesStateCategory } from '../utils/stateUtils.js';
  * @returns {Object} Team member data with activities
  */
 export async function processTeamActivities(projectId, projectName, projectIdentifier, startOfDay, endOfDay, dateKey) {
+  const startTime = Date.now();
+
+  // Start a single session for the entire operation
+  startProjectSession(projectId);
+
+  // Preload all users for fast lookup
+  await preloadAllUsers();
+
   const members = await getProjectMembers(projectId);
   logger.info(`Found ${members.length} members in project ${projectName}`);
 
-  const cycles = await getCyclesWithCache(projectId);
+  // Fetch cycles in parallel with activities
+  const cyclesPromise = getCyclesWithCache(projectId);
+
+  // Members to ignore in team summaries
+  const ignoredMembers = ['suhas', 'abhinav'];
+
+  // Filter members first
+  const activeMembers = members.filter(member => {
+    const userData = member.member || member.user || member;
+    const memberName =
+      member.display_name ||
+      userData.display_name ||
+      userData.first_name ||
+      userData.email ||
+      "Unknown";
+
+    if (memberName === "Unknown") return false;
+    if (memberName && typeof memberName === 'string' &&
+      ignoredMembers.some(ignored => memberName.toLowerCase().includes(ignored))) {
+      logger.info(`Skipping ignored member: ${memberName}`);
+      return false;
+    }
+    return true;
+  });
+
+  logger.info(`Processing ${activeMembers.length} active members (after filtering ${members.length - activeMembers.length} ignored)`);
+
+  // Clear activity caches once at the start
+  clearActivityCaches();
+
+  // CRITICAL OPTIMIZATION: Fetch ALL activities for the project ONCE (no actor filter)
+  // This is the key change - we fetch everything once and filter in memory
+  logger.info(`🚀 OPTIMIZED: Fetching ALL activities for project ${projectIdentifier} once`);
+  const allActivities = await getTeamActivities(
+    startOfDay,
+    endOfDay,
+    projectIdentifier,
+    null // NO actor filter - get ALL activities
+  );
+
+  const fetchDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+  logger.info(`✅ Fetched ${allActivities.length} total activities in ${fetchDuration}s`);
+
+  // Wait for cycles
+  const cycles = await cyclesPromise;
   logger.info(`Found ${cycles.length} total cycles for project`);
 
   // Find active cycles for the date
@@ -32,32 +102,35 @@ export async function processTeamActivities(projectId, projectName, projectIdent
   const cycleInfo = formatCycleInfo(relevantCycles);
   logger.info(`Cycle info: ${cycleInfo}`);
 
-  // Clear caches for fresh data
-  clearActivityCaches();
-
-  // Get activities for each team member
+  // OPTIMIZATION: Group activities by actor/assignee in memory (no API calls!)
   const teamMemberData = [];
-  logger.info(`Processing ${members.length} team members for activities on ${dateKey}`);
 
-  // Members to ignore in team summaries
-  const ignoredMembers = ['suhas', 'abhinav'];
+  for (const member of activeMembers) {
+    const userData = member.member || member.user || member;
+    const memberName =
+      member.display_name ||
+      userData.display_name ||
+      userData.first_name ||
+      userData.email ||
+      "Unknown";
 
-  for (const member of members) {
-    const memberData = await processMemberActivities(
-      member,
-      startOfDay,
-      endOfDay,
-      projectIdentifier,
-      dateKey,
-      ignoredMembers
-    );
+    // Filter activities for this member IN MEMORY (no API call!)
+    const memberActivities = filterActivitiesForMember(allActivities, memberName);
 
-    if (memberData) {
-      teamMemberData.push(memberData);
+    logger.debug(`Member ${memberName}: ${memberActivities.length} activities (filtered from ${allActivities.length})`);
+
+    const { completed, inProgress, todo, comments } = processActivities(memberActivities);
+
+    if (comments.length > 0) {
+      logger.debug(`Member ${memberName}: Found ${comments.length} comments`);
     }
+
+    // Add all members to the summary
+    teamMemberData.push({ name: memberName, completed, inProgress, todo, comments });
   }
 
-  logger.info(`Team member processing complete: ${teamMemberData.length} members with data`);
+  const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+  logger.info(`✅ Team member processing complete in ${totalDuration}s: ${teamMemberData.length} members with data`);
 
   return {
     teamMemberData,
@@ -65,6 +138,37 @@ export async function processTeamActivities(projectId, projectName, projectIdent
     projectName,
     dateKey
   };
+}
+
+/**
+ * Filter activities for a specific member from the full list
+ * This is done entirely in memory - no API calls!
+ */
+function filterActivitiesForMember(allActivities, memberName) {
+  const memberActivities = [];
+
+  for (const activity of allActivities) {
+    // For activities and comments: check if actor matches
+    if (activity.type === "activity" || activity.type === "comment") {
+      if (namesMatch(activity.actor, memberName)) {
+        memberActivities.push(activity);
+      }
+    }
+    // For work_item_snapshot: check if member is in assignees
+    else if (activity.type === "work_item_snapshot") {
+      if (activity.assignees && activity.assignees.some(a => namesMatch(a, memberName))) {
+        memberActivities.push(activity);
+      }
+    }
+    // For subitems: check if member is in assignees
+    else if (activity.type === "subitem") {
+      if (activity.assignees && activity.assignees.some(a => namesMatch(a, memberName))) {
+        memberActivities.push(activity);
+      }
+    }
+  }
+
+  return memberActivities;
 }
 
 /**
@@ -114,66 +218,6 @@ function formatCycleInfo(cycles) {
       return `${c.name} -> ${percentage}% completed`;
     })
     .join("\n");
-}
-
-/**
- * Process activities for a single team member
- * @param {Object} member - Member object from API
- * @param {Date} startOfDay - Start of date range
- * @param {Date} endOfDay - End of date range
- * @param {string} projectIdentifier - Project identifier
- * @param {string} dateKey - Date key for logging
- * @param {Array} ignoredMembers - List of members to ignore
- * @returns {Object|null} Member data with activities or null if skipped
- */
-async function processMemberActivities(member, startOfDay, endOfDay, projectIdentifier, dateKey, ignoredMembers) {
-  const userData = member.member || member.user || member;
-  const memberName =
-    member.display_name ||
-    userData.display_name ||
-    userData.first_name ||
-    userData.email ||
-    "Unknown";
-
-  if (memberName === "Unknown") {
-    logger.warn(`Skipping member with Unknown name`);
-    return null;
-  }
-
-  // Skip ignored members
-  if (memberName && typeof memberName === 'string' &&
-    ignoredMembers.some(ignored => memberName.toLowerCase().includes(ignored))) {
-    logger.info(`Skipping ignored member: ${memberName}`);
-    return null;
-  }
-
-  logger.info(`Processing member: ${memberName}`);
-
-  try {
-    const personActivities = await getTeamActivities(
-      startOfDay,
-      endOfDay,
-      projectIdentifier,
-      memberName
-    );
-
-    // Continue processing even if no activities for this date
-    logger.info(`Member ${memberName}: ${personActivities.length} activities on ${dateKey}`);
-
-    const { completed, inProgress, todo, comments } = processActivities(personActivities);
-
-    // Log comment count for debugging
-    if (comments.length > 0) {
-      logger.info(`Member ${memberName}: Found ${comments.length} comments`);
-    }
-
-    // Add all members to the summary, even if they have no activity
-    return { name: memberName, completed, inProgress, todo, comments };
-
-  } catch (error) {
-    logger.warn(`Error fetching activities for ${memberName}: ${error.message}`);
-    return null;
-  }
 }
 
 /**
