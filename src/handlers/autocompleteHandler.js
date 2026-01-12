@@ -91,16 +91,22 @@ async function handlePersonAutocomplete(query) {
  */
 async function handleProjectAutocomplete(query) {
   logger.debug(`Autocomplete for project: "${query}"`);
-  const projects = await fetchProjects();
-  logger.debug(`Fetched ${projects.length} projects for autocomplete`);
+  const allProjects = await fetchProjects();
+  logger.debug(`Fetched ${allProjects.length} projects for autocomplete`);
 
-  if (!projects || projects.length === 0) {
+  if (!allProjects || allProjects.length === 0) {
     logger.warn("No projects available for autocomplete");
     return {
       type: 8,
       data: { choices: [{ name: "No projects found", value: "none" }] }
     };
   }
+
+  // Filter to only show specific projects: Radar(RADAR), Forga(FORGE), SLM - Radar Agent(SLMRA), HSBC Smart Splunk(HSBCS)
+  const allowedProjectIdentifiers = ['RADAR', 'FORGE', 'SLMRA', 'HSBCS'];
+  const projects = allProjects.filter(project => allowedProjectIdentifiers.includes(project.identifier));
+
+  logger.debug(`Filtered to ${projects.length} allowed projects for autocomplete`);
 
   const focusedValue = query?.toLowerCase() || '';
 

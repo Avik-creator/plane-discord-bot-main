@@ -51,12 +51,26 @@ export async function handleScheduled(event, env, ctx) {
     const dateKey = targetDate.toISOString().split('T')[0];
 
     // Get all projects
-    const projects = await fetchProjects();
+    const allProjects = await fetchProjects();
 
-    if (!projects || projects.length === 0) {
+    if (!allProjects || allProjects.length === 0) {
       logger.warn('No projects found for scheduled team summary');
       await sendMessageToChannel(channelId, discordToken, {
         content: `⚠️ No projects found for daily team summary on ${dateKey}`
+      });
+      return;
+    }
+
+    // Filter to only process specific projects: Radar(RADAR), Forga(FORGE), SLM - Radar Agent(SLMRA), HSBC Smart Splunk(HSBCS)
+    const allowedProjectIdentifiers = ['RADAR', 'FORGE', 'SLMRA', 'HSBCS'];
+    const projects = allProjects.filter(project => allowedProjectIdentifiers.includes(project.identifier));
+
+    logger.info(`Filtered to ${projects.length} out of ${allProjects.length} total projects for scheduled processing`);
+
+    if (projects.length === 0) {
+      logger.warn('No allowed projects found for scheduled team summary');
+      await sendMessageToChannel(channelId, discordToken, {
+        content: `⚠️ No allowed projects found for daily team summary on ${dateKey}`
       });
       return;
     }
