@@ -212,7 +212,7 @@ ${formattedTeamData}`;
 
     // Send footer with stats
     await sendMessageToChannel(channelId, discordToken, {
-      content: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ Sent **${summariesSent}** team summaries | ⏸️ **${noActivityCount}** projects with no activity`
+      content: `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n✅ Sent **${summariesSent}** team summaries`
     });
 
     logger.info(`Scheduled team summary complete: ${summariesSent} summaries sent, ${noActivityCount} with no activity`);
