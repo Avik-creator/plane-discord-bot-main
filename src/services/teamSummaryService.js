@@ -124,7 +124,7 @@ export async function processTeamActivities(projectId, projectName, projectIdent
     if (comments.length > 0) {
       logger.debug(`Member ${memberName}: Found ${comments.length} comments`);
     }
-    
+
     if (activityUpdates.length > 0) {
       logger.debug(`Member ${memberName}: Found ${activityUpdates.length} activity updates`);
     }
@@ -266,15 +266,15 @@ function processActivities(activities) {
     if (activity.type === "activity" || activity.type === "work_item_snapshot") {
       const verb = activity.verb || "updated";
       const field = activity.field || "";
-      
+
       const isCreation = verb === "created" || field === "created";
       const isCycleChange = field === "cycle" || field === "cycles";
       const isStateChange = field === "state" || field === "status";
-      
+
       if (isCreation || isCycleChange || isStateChange) {
         const updateKey = `${workItemId}-${field}-${verb}`;
         const existingUpdate = activityUpdates.find(u => u.key === updateKey);
-        
+
         if (!existingUpdate) {
           let action = "";
           if (isCreation) {
@@ -284,7 +284,7 @@ function processActivities(activities) {
           } else if (isStateChange) {
             action = `changed to ${activity.newValue || activity.state || "Unknown"}`;
           }
-          
+
           activityUpdates.push({
             key: updateKey,
             id: workItemId,
@@ -297,7 +297,7 @@ function processActivities(activities) {
           });
         }
       }
-      
+
       const state = isStateChange
         ? (activity.newValue || activity.state || "Unknown")
         : (activity.state || activity.newValue || "Unknown");
@@ -460,13 +460,14 @@ export function formatTeamDataForAI(teamMemberData) {
 
       const commentsText = Object.keys(commentsByTask).length > 0
         ? Object.entries(commentsByTask)
-          .map(([taskId, commentList]) => {
+          .flatMap(([taskId, commentList]) => {
             const task = member.inProgress.find((t) => t.id === taskId) ||
               member.completed.find((t) => t.id === taskId) ||
               member.todo?.find((t) => t.id === taskId);
             const taskName = task?.name || taskId;
             const relText = task?.relationships ? formatRelationships(task.relationships) : "";
-            return `  • ${taskId}: ${commentList[0]}${relText}`;
+            // Show all comments for this task
+            return commentList.map(comment => `  • ${taskId}: ${comment}${relText}`);
           })
           .join("\n")
         : "  None";
